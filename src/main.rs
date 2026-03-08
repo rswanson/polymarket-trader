@@ -128,10 +128,41 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        Command::DryRun(_args) => {
-            // Command handlers will be wired up in a later task.
-            let _ = _args;
-            todo!("dry-run command handlers not yet implemented");
+        Command::DryRun(args) => {
+            let client = client::create_unauthenticated_client(&cli.clob_host)?;
+            match &args.command {
+                DryRunCommand::Limit {
+                    token_id,
+                    side,
+                    price,
+                    size,
+                } => {
+                    commands::dry_run::place_limit(&client, token_id, side, price, size, json)
+                        .await?;
+                }
+                DryRunCommand::Market {
+                    token_id,
+                    side,
+                    amount,
+                } => {
+                    commands::dry_run::place_market(&client, token_id, side, amount, json).await?;
+                }
+                DryRunCommand::Cancel { trade_id } => {
+                    commands::dry_run::cancel(trade_id, json)?;
+                }
+                DryRunCommand::Positions => {
+                    commands::dry_run::positions(json)?;
+                }
+                DryRunCommand::Trades { limit } => {
+                    commands::dry_run::trades(*limit, json)?;
+                }
+                DryRunCommand::Pnl => {
+                    commands::dry_run::pnl(&client, json).await?;
+                }
+                DryRunCommand::Reset { balance } => {
+                    commands::dry_run::reset(balance, json)?;
+                }
+            }
         }
     }
 
