@@ -201,11 +201,7 @@ async fn handle_get_trades() -> Json<Value> {
 
 /// Logging middleware — prints every request method + URI to stderr for test debugging.
 async fn log_requests(request: Request, next: Next) -> Response {
-    eprintln!(
-        "[mock-clob] {} {}",
-        request.method(),
-        request.uri()
-    );
+    eprintln!("[mock-clob] {} {}", request.method(), request.uri());
     next.run(request).await
 }
 

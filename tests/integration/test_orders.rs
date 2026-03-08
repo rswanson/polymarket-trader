@@ -41,8 +41,7 @@ async fn place_limit_order() {
     let key_hex = hex::encode(signer.credential().to_bytes());
 
     // Use a realistic token ID (all digits, so resolve_market will treat it as raw)
-    let token_id =
-        "52114319501245915516055106046884209969926127482827954674443846427813813222426";
+    let token_id = "52114319501245915516055106046884209969926127482827954674443846427813813222426";
 
     // 3. Run: polymarket-trader --json --private-key <key> --clob-host <url> orders limit <token_id> buy 0.50 10
     let output = tokio::time::timeout(
