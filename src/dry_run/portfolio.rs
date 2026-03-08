@@ -40,40 +40,38 @@ pub struct PnlReport {
 
 /// Aggregate trades into net positions per token_id.
 pub fn compute_positions(trades: &[Trade]) -> Result<Vec<Position>> {
-    // Accumulate net_size and total_cost per token_id
-    let mut sizes: HashMap<String, Decimal> = HashMap::new();
-    let mut costs: HashMap<String, Decimal> = HashMap::new();
+    // Accumulate (net_size, total_cost) per token_id
+    let mut accum: HashMap<String, (Decimal, Decimal)> = HashMap::new();
 
     for trade in trades {
         let size = Decimal::from_str(&trade.size)?;
         let cost = Decimal::from_str(&trade.cost)?;
-
-        let entry_size = sizes.entry(trade.token_id.clone()).or_insert(Decimal::ZERO);
-        let entry_cost = costs.entry(trade.token_id.clone()).or_insert(Decimal::ZERO);
-
+        let entry = accum
+            .entry(trade.token_id.clone())
+            .or_insert((Decimal::ZERO, Decimal::ZERO));
         match trade.side.as_str() {
             "buy" => {
-                *entry_size += size;
-                *entry_cost += cost;
+                entry.0 += size;
+                entry.1 += cost;
             }
             "sell" => {
-                *entry_size -= size;
-                *entry_cost -= cost;
+                entry.0 -= size;
+                entry.1 -= cost;
             }
             _ => {}
         }
     }
 
     let mut positions = Vec::new();
-    for (token_id, net_size) in &sizes {
+    for (token_id, (net_size, total_cost)) in &accum {
         if *net_size == Decimal::ZERO {
             continue;
         }
 
-        let total_cost = costs.get(token_id).copied().unwrap_or(Decimal::ZERO);
+        let total_cost = *total_cost;
         let abs_net = net_size.abs();
         let avg_price = if abs_net > Decimal::ZERO {
-            (total_cost / *net_size).abs()
+            (total_cost / net_size).abs()
         } else {
             Decimal::ZERO
         };

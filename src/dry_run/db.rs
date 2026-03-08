@@ -37,6 +37,18 @@ fn db_path() -> Result<PathBuf> {
     Ok(home.join(".polymarket").join("dry-run.db"))
 }
 
+fn row_to_trade(row: &rusqlite::Row) -> rusqlite::Result<Trade> {
+    Ok(Trade {
+        id: row.get(0)?,
+        token_id: row.get(1)?,
+        side: row.get(2)?,
+        price: row.get(3)?,
+        size: row.get(4)?,
+        cost: row.get(5)?,
+        timestamp: row.get(6)?,
+    })
+}
+
 impl DryRunDb {
     /// Open an in-memory database (for testing).
     #[cfg(test)]
@@ -164,17 +176,7 @@ impl DryRunDb {
                 "SELECT id, token_id, side, price, size, cost, timestamp
                  FROM trades WHERE id = ?1",
                 params![trade_id],
-                |row| {
-                    Ok(Trade {
-                        id: row.get(0)?,
-                        token_id: row.get(1)?,
-                        side: row.get(2)?,
-                        price: row.get(3)?,
-                        size: row.get(4)?,
-                        cost: row.get(5)?,
-                        timestamp: row.get(6)?,
-                    })
-                },
+                row_to_trade,
             )
             .optional()?;
         Ok(trade)
@@ -186,17 +188,7 @@ impl DryRunDb {
              FROM trades ORDER BY timestamp DESC LIMIT ?1",
         )?;
         let trades = stmt
-            .query_map(params![limit], |row| {
-                Ok(Trade {
-                    id: row.get(0)?,
-                    token_id: row.get(1)?,
-                    side: row.get(2)?,
-                    price: row.get(3)?,
-                    size: row.get(4)?,
-                    cost: row.get(5)?,
-                    timestamp: row.get(6)?,
-                })
-            })?
+            .query_map(params![limit], row_to_trade)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(trades)
     }
@@ -207,17 +199,7 @@ impl DryRunDb {
              FROM trades ORDER BY timestamp DESC",
         )?;
         let trades = stmt
-            .query_map([], |row| {
-                Ok(Trade {
-                    id: row.get(0)?,
-                    token_id: row.get(1)?,
-                    side: row.get(2)?,
-                    price: row.get(3)?,
-                    size: row.get(4)?,
-                    cost: row.get(5)?,
-                    timestamp: row.get(6)?,
-                })
-            })?
+            .query_map([], row_to_trade)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(trades)
     }

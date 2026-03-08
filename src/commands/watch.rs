@@ -54,17 +54,26 @@ pub async fn watch<S: State>(
                 }
                 first_tick = false;
 
-                for resolved in resolved_markets {
-                    let token_id = resolved.token_id;
-                    let request = MidpointRequest::builder().token_id(token_id).build();
-                    let mid = match client.midpoint(&request).await {
+                let futs: Vec<_> = resolved_markets
+                    .iter()
+                    .map(|resolved| async move {
+                        let request =
+                            MidpointRequest::builder().token_id(resolved.token_id).build();
+                        let result = client.midpoint(&request).await;
+                        (resolved, result)
+                    })
+                    .collect();
+                let results = futures::future::join_all(futs).await;
+
+                for (resolved, result) in results {
+                    let mid = match result {
                         Ok(resp) => resp.mid,
                         Err(e) => {
                             if json {
-                                // Skip this tick for this token
                                 continue;
                             } else {
-                                let label = resolved.slug.as_deref().unwrap_or(&resolved.token_id_str);
+                                let label =
+                                    resolved.slug.as_deref().unwrap_or(&resolved.token_id_str);
                                 eprintln!(
                                     "  {} [{}]  Error: {e}",
                                     truncate(label, 50),

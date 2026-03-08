@@ -7,7 +7,6 @@ use std::str::FromStr;
 
 /// Metadata about a resolved market, for display purposes.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "fields consumed by later tasks (5-9)")]
 pub struct ResolvedMarket {
     pub token_id: U256,
     pub token_id_str: String,

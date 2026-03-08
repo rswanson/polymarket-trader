@@ -77,12 +77,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     interval,
                 } => {
                     let clob_client = client::create_unauthenticated_client(&cli.clob_host)?;
-                    let mut resolved_markets = Vec::new();
-                    for m in markets {
-                        let resolved =
-                            resolve::resolve_market(&gamma_client, m, outcome.as_deref()).await?;
-                        resolved_markets.push(resolved);
-                    }
+                    let futs: Vec<_> = markets
+                        .iter()
+                        .map(|m| resolve::resolve_market(&gamma_client, m, outcome.as_deref()))
+                        .collect();
+                    let resolved_markets = futures::future::try_join_all(futs).await?;
                     commands::watch::watch(&clob_client, &resolved_markets, *interval, json)
                         .await?;
                 }
