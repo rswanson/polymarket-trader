@@ -3461,8 +3461,6 @@ dependencies = [
  "clap",
  "comfy-table",
  "polymarket-client-sdk",
- "rust_decimal",
- "rust_decimal_macros",
  "serde",
  "serde_json",
  "tokio",

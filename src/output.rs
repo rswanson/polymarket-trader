@@ -22,7 +22,8 @@ pub fn print_output<T: Serialize>(
 
 pub fn print_error(json_mode: bool, msg: &str) {
     if json_mode {
-        println!(r#"{{"error": "{}"}}"#, msg.replace('"', r#"\""#));
+        let err = serde_json::json!({"error": msg});
+        println!("{}", serde_json::to_string_pretty(&err).unwrap());
     } else {
         eprintln!("Error: {msg}");
     }

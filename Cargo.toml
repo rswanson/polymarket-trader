@@ -16,5 +16,3 @@ comfy-table = "7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
-rust_decimal = "1.40"
-rust_decimal_macros = "1.40"

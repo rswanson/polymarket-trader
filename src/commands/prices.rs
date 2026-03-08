@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use polymarket_client_sdk::auth::state::State;
 use polymarket_client_sdk::clob::Client;
 use polymarket_client_sdk::clob::types::request::{
@@ -8,7 +8,7 @@ use polymarket_client_sdk::types::U256;
 use serde::Serialize;
 use std::str::FromStr;
 
-use crate::output::{print_error, print_output};
+use crate::output::print_output;
 
 #[derive(Serialize)]
 struct MidpointResult {
@@ -40,13 +40,10 @@ pub async fn midpoint<S: State>(client: &Client<S>, token_id_str: &str, json: bo
         U256::from_str(token_id_str).map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
 
     let request = MidpointRequest::builder().token_id(token_id).build();
-    let response = match client.midpoint(&request).await {
-        Ok(r) => r,
-        Err(e) => {
-            print_error(json, &format!("Failed to fetch midpoint: {e}"));
-            return Ok(());
-        }
-    };
+    let response = client
+        .midpoint(&request)
+        .await
+        .context("Failed to fetch midpoint")?;
 
     let result = MidpointResult {
         token_id: token_id_str.to_string(),
@@ -65,13 +62,10 @@ pub async fn spread<S: State>(client: &Client<S>, token_id_str: &str, json: bool
         U256::from_str(token_id_str).map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
 
     let request = SpreadRequest::builder().token_id(token_id).build();
-    let response = match client.spread(&request).await {
-        Ok(r) => r,
-        Err(e) => {
-            print_error(json, &format!("Failed to fetch spread: {e}"));
-            return Ok(());
-        }
-    };
+    let response = client
+        .spread(&request)
+        .await
+        .context("Failed to fetch spread")?;
 
     let result = SpreadResult {
         token_id: token_id_str.to_string(),
@@ -92,13 +86,10 @@ pub async fn book<S: State>(client: &Client<S>, token_id_str: &str, json: bool) 
     let request = OrderBookSummaryRequest::builder()
         .token_id(token_id)
         .build();
-    let response = match client.order_book(&request).await {
-        Ok(r) => r,
-        Err(e) => {
-            print_error(json, &format!("Failed to fetch order book: {e}"));
-            return Ok(());
-        }
-    };
+    let response = client
+        .order_book(&request)
+        .await
+        .context("Failed to fetch order book")?;
 
     let result = BookResult {
         token_id: token_id_str.to_string(),

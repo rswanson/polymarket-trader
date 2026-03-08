@@ -47,9 +47,11 @@ fn parse_side(s: &str) -> Result<Side> {
 
 pub async fn list_orders(
     client: &Client<Authenticated<Normal>>,
-    _all: bool,
+    #[allow(unused_variables)] all: bool,
     json: bool,
 ) -> Result<()> {
+    // TODO: The SDK's OrdersRequest does not currently support filtering by status.
+    // The `all` flag is accepted but has no effect until the SDK adds status filtering.
     let request = OrdersRequest::builder().build();
     let page = client
         .orders(&request, None)

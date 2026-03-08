@@ -1,9 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use polymarket_client_sdk::auth::state::State;
 use polymarket_client_sdk::clob::Client;
 use serde::Serialize;
 
-use crate::output::{print_error, print_output};
+use crate::output::print_output;
 
 #[derive(Serialize)]
 struct MarketRow {
@@ -95,13 +95,10 @@ pub async fn show_market<S: State>(
     condition_id: &str,
     json: bool,
 ) -> Result<()> {
-    let market = match client.market(condition_id).await {
-        Ok(m) => m,
-        Err(e) => {
-            print_error(json, &format!("Failed to fetch market: {e}"));
-            return Ok(());
-        }
-    };
+    let market = client
+        .market(condition_id)
+        .await
+        .context("Failed to fetch market")?;
 
     let detail = MarketDetail {
         condition_id: market
