@@ -1,27 +1,9 @@
 //! Integration test: order placement against the mock CLOB server.
 
 use crate::integration::mock_clob::start_mock_clob;
+use crate::integration::run_cli;
 use alloy::signers::local::PrivateKeySigner;
 use std::time::Duration;
-
-/// Helper to run the CLI binary as a subprocess without blocking the tokio runtime.
-async fn run_cli(args: &[&str], key_hex: &str, clob_host: &str) -> std::process::Output {
-    let bin_path = assert_cmd::cargo_bin!("polymarket-trader");
-    tokio::process::Command::new(bin_path)
-        .args(args)
-        .env("POLYMARKET_PRIVATE_KEY", key_hex)
-        .env_remove("POLYMARKET_KMS_KEY_ID")
-        .env_remove("RUST_LOG")
-        .env("POLYMARKET_CLOB_HOST", clob_host)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .expect("failed to spawn CLI")
-        .wait_with_output()
-        .await
-        .expect("failed to wait for CLI")
-}
 
 /// Test placing a limit order against the mock CLOB.
 ///

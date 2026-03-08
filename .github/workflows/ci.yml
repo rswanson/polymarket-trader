@@ -65,7 +65,6 @@ jobs:
     name: Integration Tests
     needs: [check, clippy, fmt]
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -73,8 +72,12 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
       - name: Run integration tests
+        if: env.POLYGON_RPC_URL != ''
         env:
           POLYGON_RPC_URL: ${{ secrets.POLYGON_RPC_URL }}
           RUST_LOG: warn
         run: cargo test --features integration-tests -- --nocapture
         timeout-minutes: 10
+      - name: Skip integration tests (no RPC URL)
+        if: env.POLYGON_RPC_URL == ''
+        run: echo "Skipping integration tests — POLYGON_RPC_URL secret not configured"

@@ -26,6 +26,22 @@ pub fn create_local_signer(private_key: &str) -> anyhow::Result<PrivateKeySigner
     Ok(signer)
 }
 
+pub async fn resolve_signer(
+    private_key: &Option<String>,
+    kms_key_id: &Option<String>,
+) -> anyhow::Result<AnySigner> {
+    match (private_key, kms_key_id) {
+        (Some(_), Some(_)) => anyhow::bail!("Cannot specify both --private-key and --kms-key-id"),
+        (Some(pk), None) => Ok(AnySigner::Local(create_local_signer(pk)?)),
+        (None, Some(key_id)) => Ok(AnySigner::Kms(create_kms_signer(key_id).await?)),
+        (None, None) => anyhow::bail!(
+            "Wallet key is required for this command. \
+             Set --private-key / POLYMARKET_PRIVATE_KEY or \
+             --kms-key-id / POLYMARKET_KMS_KEY_ID."
+        ),
+    }
+}
+
 pub enum AnySigner {
     Local(PrivateKeySigner),
     Kms(AwsSigner),

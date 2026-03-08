@@ -110,20 +110,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         // Orders and Account require authentication
         Command::Orders(args) => {
-            let signer = match (&cli.private_key, &cli.kms_key_id) {
-                (Some(_), Some(_)) => {
-                    anyhow::bail!("Cannot specify both --private-key and --kms-key-id")
-                }
-                (Some(pk), None) => signer::AnySigner::Local(signer::create_local_signer(pk)?),
-                (None, Some(key_id)) => {
-                    signer::AnySigner::Kms(signer::create_kms_signer(key_id).await?)
-                }
-                (None, None) => anyhow::bail!(
-                    "Wallet key is required for this command. \
-                     Set --private-key / POLYMARKET_PRIVATE_KEY or \
-                     --kms-key-id / POLYMARKET_KMS_KEY_ID."
-                ),
-            };
+            let signer = signer::resolve_signer(&cli.private_key, &cli.kms_key_id).await?;
             let client = client::create_authenticated_client(&cli.clob_host, &signer).await?;
 
             let gamma_client = gamma::create_gamma_client();
@@ -179,20 +166,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Command::Account(args) => {
-            let signer = match (&cli.private_key, &cli.kms_key_id) {
-                (Some(_), Some(_)) => {
-                    anyhow::bail!("Cannot specify both --private-key and --kms-key-id")
-                }
-                (Some(pk), None) => signer::AnySigner::Local(signer::create_local_signer(pk)?),
-                (None, Some(key_id)) => {
-                    signer::AnySigner::Kms(signer::create_kms_signer(key_id).await?)
-                }
-                (None, None) => anyhow::bail!(
-                    "Wallet key is required for this command. \
-                     Set --private-key / POLYMARKET_PRIVATE_KEY or \
-                     --kms-key-id / POLYMARKET_KMS_KEY_ID."
-                ),
-            };
+            let signer = signer::resolve_signer(&cli.private_key, &cli.kms_key_id).await?;
             let client = client::create_authenticated_client(&cli.clob_host, &signer).await?;
 
             match &args.command {
