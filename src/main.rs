@@ -4,7 +4,6 @@ mod commands;
 mod dry_run;
 mod gamma;
 mod output;
-#[allow(dead_code, reason = "public API consumed by later tasks (4-9)")]
 mod resolve;
 mod signer;
 
@@ -75,16 +74,23 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Command::Prices(args) => {
-            let client = client::create_unauthenticated_client(&cli.clob_host)?;
+            let clob_client = client::create_unauthenticated_client(&cli.clob_host)?;
+            let gamma_client = gamma::create_gamma_client();
             match &args.command {
-                PricesCommand::Midpoint { token_id } => {
-                    commands::prices::midpoint(&client, token_id, json).await?;
+                PricesCommand::Midpoint { market, outcome } => {
+                    let resolved =
+                        resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
+                    commands::prices::midpoint(&clob_client, &resolved.token_id_str, json).await?;
                 }
-                PricesCommand::Spread { token_id } => {
-                    commands::prices::spread(&client, token_id, json).await?;
+                PricesCommand::Spread { market, outcome } => {
+                    let resolved =
+                        resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
+                    commands::prices::spread(&clob_client, &resolved.token_id_str, json).await?;
                 }
-                PricesCommand::Book { token_id } => {
-                    commands::prices::book(&client, token_id, json).await?;
+                PricesCommand::Book { market, outcome } => {
+                    let resolved =
+                        resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
+                    commands::prices::book(&clob_client, &resolved.token_id_str, json).await?;
                 }
             }
         }
@@ -99,20 +105,25 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let kms_signer = signer::create_kms_signer(kms_key_id).await?;
             let client = client::create_authenticated_client(&cli.clob_host, &kms_signer).await?;
 
+            let gamma_client = gamma::create_gamma_client();
+
             match &args.command {
                 OrdersCommand::List { all } => {
                     commands::orders::list_orders(&client, *all, json).await?;
                 }
                 OrdersCommand::Limit {
-                    token_id,
+                    market,
+                    outcome,
                     side,
                     price,
                     size,
                 } => {
+                    let resolved =
+                        resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
                     commands::orders::place_limit(
                         &client,
                         &kms_signer,
-                        token_id,
+                        &resolved.token_id_str,
                         side,
                         price,
                         size,
@@ -121,14 +132,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     .await?;
                 }
                 OrdersCommand::Market {
-                    token_id,
+                    market,
+                    outcome,
                     side,
                     amount,
                 } => {
+                    let resolved =
+                        resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
                     commands::orders::place_market(
                         &client,
                         &kms_signer,
-                        token_id,
+                        &resolved.token_id_str,
                         side,
                         amount,
                         json,
@@ -163,23 +177,44 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Command::DryRun(args) => {
-            let client = client::create_unauthenticated_client(&cli.clob_host)?;
+            let clob_client = client::create_unauthenticated_client(&cli.clob_host)?;
+            let gamma_client = gamma::create_gamma_client();
             match &args.command {
                 DryRunCommand::Limit {
-                    token_id,
+                    market,
+                    outcome,
                     side,
                     price,
                     size,
                 } => {
-                    commands::dry_run::place_limit(&client, token_id, side, price, size, json)
-                        .await?;
+                    let resolved =
+                        resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
+                    commands::dry_run::place_limit(
+                        &clob_client,
+                        &resolved.token_id_str,
+                        side,
+                        price,
+                        size,
+                        json,
+                    )
+                    .await?;
                 }
                 DryRunCommand::Market {
-                    token_id,
+                    market,
+                    outcome,
                     side,
                     amount,
                 } => {
-                    commands::dry_run::place_market(&client, token_id, side, amount, json).await?;
+                    let resolved =
+                        resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
+                    commands::dry_run::place_market(
+                        &clob_client,
+                        &resolved.token_id_str,
+                        side,
+                        amount,
+                        json,
+                    )
+                    .await?;
                 }
                 DryRunCommand::Cancel { trade_id } => {
                     commands::dry_run::cancel(trade_id, json)?;
@@ -191,7 +226,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     commands::dry_run::trades(*limit, json)?;
                 }
                 DryRunCommand::Pnl => {
-                    commands::dry_run::pnl(&client, json).await?;
+                    commands::dry_run::pnl(&clob_client, json).await?;
                 }
                 DryRunCommand::Reset { balance } => {
                     commands::dry_run::reset(balance, json)?;

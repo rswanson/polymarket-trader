@@ -86,11 +86,29 @@ pub struct PricesArgs {
 #[derive(Subcommand)]
 pub enum PricesCommand {
     /// Get current midpoint price
-    Midpoint { token_id: String },
+    Midpoint {
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
+    },
     /// Get bid-ask spread
-    Spread { token_id: String },
+    Spread {
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
+    },
     /// Get full order book
-    Book { token_id: String },
+    Book {
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
+    },
 }
 
 #[derive(Parser)]
@@ -108,7 +126,11 @@ pub enum OrdersCommand {
     },
     /// Place a limit order
     Limit {
-        token_id: String,
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
         /// Side: "buy" or "sell"
         side: String,
         /// Price (0.01 - 0.99)
@@ -118,7 +140,11 @@ pub enum OrdersCommand {
     },
     /// Place a market order
     Market {
-        token_id: String,
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
         /// Side: "buy" or "sell"
         side: String,
         /// Amount in USDC
@@ -160,7 +186,11 @@ pub struct DryRunArgs {
 pub enum DryRunCommand {
     /// Simulate a limit order (fills at current midpoint)
     Limit {
-        token_id: String,
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
         /// Side: "buy" or "sell"
         side: String,
         /// Price (for reference, fill is at midpoint)
@@ -170,7 +200,11 @@ pub enum DryRunCommand {
     },
     /// Simulate a market order (fills at current midpoint)
     Market {
-        token_id: String,
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
         /// Side: "buy" or "sell"
         side: String,
         /// Amount in USDC
