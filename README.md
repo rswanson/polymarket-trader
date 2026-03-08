@@ -89,6 +89,35 @@ polymarket-trader account balance
 polymarket-trader account trades --limit 10
 ```
 
+### Dry-Run (Paper Trading)
+
+Simulate trades using real market prices without executing on-chain. No KMS credentials needed.
+
+```bash
+# Reset with custom starting balance
+polymarket-trader dry-run reset --balance 5000
+
+# Simulate a limit buy (fills at current midpoint)
+polymarket-trader dry-run limit <token-id> buy 0.55 100
+
+# Simulate a market buy ($50 USDC)
+polymarket-trader dry-run market <token-id> buy 50
+
+# View simulated positions
+polymarket-trader dry-run positions
+
+# View trade history
+polymarket-trader dry-run trades
+
+# Check P&L (fetches live prices)
+polymarket-trader dry-run pnl
+
+# Cancel a simulated trade
+polymarket-trader dry-run cancel <trade-id>
+```
+
+Portfolio state is stored in `~/.polymarket/dry-run.db` (SQLite).
+
 ### JSON Output
 
 Append `--json` to any command for structured output:
