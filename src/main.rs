@@ -1,11 +1,14 @@
 mod cli;
 mod client;
 mod commands;
+mod dry_run;
 mod output;
 mod signer;
 
 use clap::Parser;
-use cli::{AccountCommand, Cli, Command, MarketsCommand, OrdersCommand, PricesCommand};
+use cli::{
+    AccountCommand, Cli, Command, DryRunCommand, MarketsCommand, OrdersCommand, PricesCommand,
+};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -124,6 +127,42 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 AccountCommand::Trades { limit } => {
                     commands::account::trades(&client, *limit, json).await?;
+                }
+            }
+        }
+        Command::DryRun(args) => {
+            let client = client::create_unauthenticated_client(&cli.clob_host)?;
+            match &args.command {
+                DryRunCommand::Limit {
+                    token_id,
+                    side,
+                    price,
+                    size,
+                } => {
+                    commands::dry_run::place_limit(&client, token_id, side, price, size, json)
+                        .await?;
+                }
+                DryRunCommand::Market {
+                    token_id,
+                    side,
+                    amount,
+                } => {
+                    commands::dry_run::place_market(&client, token_id, side, amount, json).await?;
+                }
+                DryRunCommand::Cancel { trade_id } => {
+                    commands::dry_run::cancel(trade_id, json)?;
+                }
+                DryRunCommand::Positions => {
+                    commands::dry_run::positions(json)?;
+                }
+                DryRunCommand::Trades { limit } => {
+                    commands::dry_run::trades(*limit, json)?;
+                }
+                DryRunCommand::Pnl => {
+                    commands::dry_run::pnl(&client, json).await?;
+                }
+                DryRunCommand::Reset { balance } => {
+                    commands::dry_run::reset(balance, json)?;
                 }
             }
         }

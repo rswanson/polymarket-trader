@@ -22,7 +22,7 @@ Rust CLI (edition 2024) for trading on Polymarket's CLOB API. Uses AWS KMS for w
 ### Auth Split
 
 Commands are split by authentication requirement:
-- **Unauthenticated** (`markets`, `prices`): Create `Client<Unauthenticated>` — no KMS needed
+- **Unauthenticated** (`markets`, `prices`, `dry-run`): Create `Client<Unauthenticated>` — no KMS needed
 - **Authenticated** (`orders`, `account`): Require `--kms-key-id` / `POLYMARKET_KMS_KEY_ID`, create `Client<Authenticated<Normal>>` via EIP-712 L1 auth + L2 HMAC
 
 This is enforced at compile time by the SDK's type-state pattern on `Client<S>`.
@@ -34,6 +34,8 @@ This is enforced at compile time by the SDK's type-state pattern on `Client<S>`.
 - `client.rs` — Polymarket SDK client constructors (unauth + auth)
 - `output.rs` — Output formatting (`--json` for machine-readable, tables for humans)
 - `commands/` — One file per command group, each with standalone async functions
+- `dry_run/db.rs` — SQLite database for dry-run trades and balance state
+- `dry_run/portfolio.rs` — Position aggregation and P&L computation
 - `main.rs` — Tracing init, CLI parse, auth routing, command dispatch, error handling
 
 ### Key Dependencies
@@ -41,6 +43,7 @@ This is enforced at compile time by the SDK's type-state pattern on `Client<S>`.
 - `polymarket-client-sdk` (feature `clob`) — Polymarket CLOB client, order signing, market data
 - `alloy` (feature `signer-aws`) — AWS KMS EIP-712 signing
 - `aws-config` + `aws-sdk-kms` — AWS credential chain resolution
+- `rusqlite` (feature `bundled`) — SQLite for dry-run state persistence
 
 ### Error Handling
 
