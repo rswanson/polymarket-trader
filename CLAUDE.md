@@ -1,0 +1,58 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Build & Development Commands
+
+```bash
+cargo build                      # Dev build
+cargo build --release            # Release build
+cargo clippy -- -D warnings      # Lint (must pass clean)
+cargo fmt                        # Format code
+cargo fmt --check                # Verify formatting
+RUST_LOG=debug cargo run -- ...  # Run with debug logging
+```
+
+No test suite yet — verify changes compile and pass clippy.
+
+## Architecture
+
+Rust CLI (edition 2024) for trading on Polymarket's CLOB API. Uses AWS KMS for wallet signing via `alloy-signer-aws` — no private keys on disk.
+
+### Auth Split
+
+Commands are split by authentication requirement:
+- **Unauthenticated** (`markets`, `prices`): Create `Client<Unauthenticated>` — no KMS needed
+- **Authenticated** (`orders`, `account`): Require `--kms-key-id` / `POLYMARKET_KMS_KEY_ID`, create `Client<Authenticated<Normal>>` via EIP-712 L1 auth + L2 HMAC
+
+This is enforced at compile time by the SDK's type-state pattern on `Client<S>`.
+
+### Module Layout
+
+- `cli.rs` — Clap derive definitions for all commands and args
+- `signer.rs` — AWS KMS signer construction (`AwsSigner` from alloy)
+- `client.rs` — Polymarket SDK client constructors (unauth + auth)
+- `output.rs` — Output formatting (`--json` for machine-readable, tables for humans)
+- `commands/` — One file per command group, each with standalone async functions
+- `main.rs` — Tracing init, CLI parse, auth routing, command dispatch, error handling
+
+### Key Dependencies
+
+- `polymarket-client-sdk` (feature `clob`) — Polymarket CLOB client, order signing, market data
+- `alloy` (feature `signer-aws`) — AWS KMS EIP-712 signing
+- `aws-config` + `aws-sdk-kms` — AWS credential chain resolution
+
+### Error Handling
+
+Errors propagate via `anyhow::Result` to `main()`, which formats them (JSON or stderr) and exits non-zero. Command functions must NOT swallow errors — always use `?` to propagate.
+
+## Environment Variables
+
+- `POLYMARKET_KMS_KEY_ID` — AWS KMS key ID (required for orders/account)
+- `POLYMARKET_CLOB_HOST` — CLOB API host (default: `https://clob.polymarket.com`)
+- `RUST_LOG` — Tracing log level filter
+- Standard AWS credential env vars (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, etc.)
+
+## Worktrees
+
+Use `.worktrees/` for git worktrees (already in `.gitignore`).
