@@ -71,6 +71,21 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     )
                     .await?;
                 }
+                MarketsCommand::Watch {
+                    markets,
+                    outcome,
+                    interval,
+                } => {
+                    let clob_client = client::create_unauthenticated_client(&cli.clob_host)?;
+                    let mut resolved_markets = Vec::new();
+                    for m in markets {
+                        let resolved =
+                            resolve::resolve_market(&gamma_client, m, outcome.as_deref()).await?;
+                        resolved_markets.push(resolved);
+                    }
+                    commands::watch::watch(&clob_client, &resolved_markets, *interval, json)
+                        .await?;
+                }
             }
         }
         Command::Prices(args) => {

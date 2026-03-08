@@ -75,6 +75,18 @@ pub enum MarketsCommand {
         #[arg(long, default_value = "10")]
         limit: usize,
     },
+    /// Watch live prices for markets
+    Watch {
+        /// Market slugs or token IDs to watch
+        #[arg(required = true)]
+        markets: Vec<String>,
+        /// Outcome name (applies to all watched markets)
+        #[arg(long)]
+        outcome: Option<String>,
+        /// Refresh interval in seconds
+        #[arg(long, default_value = "5")]
+        interval: u64,
+    },
 }
 
 #[derive(Parser)]
