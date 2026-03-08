@@ -14,6 +14,14 @@ use crate::dry_run::db::{DryRunDb, Trade};
 use crate::dry_run::portfolio;
 use crate::output::print_output;
 
+fn truncate_token_id(token_id: &str) -> String {
+    if token_id.len() > 12 {
+        token_id.chars().take(12).collect::<String>() + "..."
+    } else {
+        token_id.to_string()
+    }
+}
+
 fn parse_side(s: &str) -> Result<String> {
     match s.to_lowercase().as_str() {
         "buy" => Ok("buy".to_string()),
@@ -57,7 +65,7 @@ pub async fn place_limit<S: State>(
     let side = parse_side(side_str)?;
     let size = Decimal::from_str(size_str).map_err(|e| anyhow::anyhow!("Invalid size: {e}"))?;
     let midpoint = fetch_midpoint(client, token_id).await?;
-    let cost = midpoint * size;
+    let cost = (midpoint * size).round_dp(2);
 
     let db = DryRunDb::open()?;
     let mut balance =
@@ -70,14 +78,27 @@ pub async fn place_limit<S: State>(
         );
         balance -= cost;
     } else {
+        let all_trades = db.all_trades()?;
+        let positions = portfolio::compute_positions(&all_trades)?;
+        let held = positions
+            .iter()
+            .find(|p| p.token_id == token_id && p.side == "long")
+            .map(|p| Decimal::from_str(&p.net_size).unwrap_or_default())
+            .unwrap_or_default();
+        anyhow::ensure!(
+            held >= size,
+            "Insufficient position: hold {held} shares, trying to sell {size}"
+        );
         balance += cost;
     }
+
+    let balance = balance.round_dp(2);
 
     let trade = Trade {
         id: Uuid::new_v4().to_string(),
         token_id: token_id.to_string(),
         side,
-        price: midpoint.to_string(),
+        price: midpoint.round_dp(6).to_string(),
         size: size.to_string(),
         cost: cost.to_string(),
         timestamp: Utc::now().to_rfc3339(),
@@ -99,7 +120,7 @@ pub async fn place_limit<S: State>(
     let headers = &["ID", "Token", "Side", "Price", "Size", "Cost", "Balance"];
     let rows = vec![vec![
         result.id.clone(),
-        result.token_id.clone(),
+        truncate_token_id(&result.token_id),
         result.side.clone(),
         result.price.clone(),
         result.size.clone(),
@@ -122,8 +143,12 @@ pub async fn place_market<S: State>(
     let amount =
         Decimal::from_str(amount_str).map_err(|e| anyhow::anyhow!("Invalid amount: {e}"))?;
     let midpoint = fetch_midpoint(client, token_id).await?;
+    anyhow::ensure!(
+        !midpoint.is_zero(),
+        "Midpoint is zero for token {token_id}, cannot calculate size"
+    );
     let size = amount / midpoint;
-    let cost = amount;
+    let cost = amount.round_dp(2);
 
     let db = DryRunDb::open()?;
     let mut balance =
@@ -136,14 +161,27 @@ pub async fn place_market<S: State>(
         );
         balance -= cost;
     } else {
+        let all_trades = db.all_trades()?;
+        let positions = portfolio::compute_positions(&all_trades)?;
+        let held = positions
+            .iter()
+            .find(|p| p.token_id == token_id && p.side == "long")
+            .map(|p| Decimal::from_str(&p.net_size).unwrap_or_default())
+            .unwrap_or_default();
+        anyhow::ensure!(
+            held >= size,
+            "Insufficient position: hold {held} shares, trying to sell {size}"
+        );
         balance += cost;
     }
+
+    let balance = balance.round_dp(2);
 
     let trade = Trade {
         id: Uuid::new_v4().to_string(),
         token_id: token_id.to_string(),
         side,
-        price: midpoint.to_string(),
+        price: midpoint.round_dp(6).to_string(),
         size: size.to_string(),
         cost: cost.to_string(),
         timestamp: Utc::now().to_rfc3339(),
@@ -165,7 +203,7 @@ pub async fn place_market<S: State>(
     let headers = &["ID", "Token", "Side", "Price", "Size", "Cost", "Balance"];
     let rows = vec![vec![
         result.id.clone(),
-        result.token_id.clone(),
+        truncate_token_id(&result.token_id),
         result.side.clone(),
         result.price.clone(),
         result.size.clone(),
@@ -186,25 +224,25 @@ struct CancelResult {
 
 pub fn cancel(trade_id: &str, json: bool) -> Result<()> {
     let db = DryRunDb::open()?;
-    let trade = db.delete_trade(trade_id)?;
+    let trade = db
+        .delete_trade(trade_id)?
+        .ok_or_else(|| anyhow::anyhow!("Trade '{trade_id}' not found"))?;
 
     let mut balance =
         Decimal::from_str(&db.get_balance()?).context("invalid balance in database")?;
 
-    let canceled = trade.is_some();
-    if let Some(ref t) = trade {
-        let cost = Decimal::from_str(&t.cost).context("invalid cost in trade")?;
-        if t.side == "buy" {
-            balance += cost;
-        } else {
-            balance -= cost;
-        }
-        db.update_balance(&balance.to_string())?;
+    let cost = Decimal::from_str(&trade.cost).context("invalid cost in trade")?;
+    if trade.side == "buy" {
+        balance += cost;
+    } else {
+        balance -= cost;
     }
+    let balance = balance.round_dp(2);
+    db.update_balance(&balance.to_string())?;
 
     let result = CancelResult {
         trade_id: trade_id.to_string(),
-        canceled,
+        canceled: true,
         balance: balance.to_string(),
     };
 
@@ -229,7 +267,7 @@ pub fn positions(json: bool) -> Result<()> {
         .iter()
         .map(|p| {
             vec![
-                p.token_id.clone(),
+                truncate_token_id(&p.token_id),
                 p.side.clone(),
                 p.net_size.clone(),
                 p.avg_price.clone(),
@@ -252,7 +290,7 @@ pub fn trades(limit: usize, json: bool) -> Result<()> {
         .map(|t| {
             vec![
                 t.id.clone(),
-                t.token_id.clone(),
+                truncate_token_id(&t.token_id),
                 t.side.clone(),
                 t.price.clone(),
                 t.size.clone(),
@@ -309,7 +347,7 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
             .iter()
             .map(|p| {
                 vec![
-                    p.token_id.clone(),
+                    truncate_token_id(&p.token_id),
                     p.side.clone(),
                     p.size.clone(),
                     p.avg_price.clone(),

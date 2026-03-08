@@ -86,9 +86,11 @@ pub fn compute_positions(trades: &[Trade]) -> Result<Vec<Position>> {
             net_size: abs_net.to_string(),
             side: side.to_string(),
             avg_price: avg_price.to_string(),
-            total_cost: total_cost.to_string(),
+            total_cost: total_cost.abs().round_dp(2).to_string(),
         });
     }
+
+    positions.sort_by(|a, b| a.token_id.cmp(&b.token_id));
 
     Ok(positions)
 }
@@ -109,10 +111,7 @@ pub fn compute_pnl(
     for pos in positions {
         let size = Decimal::from_str(&pos.net_size)?;
         let avg = Decimal::from_str(&pos.avg_price)?;
-        let current_price = current_prices
-            .get(&pos.token_id)
-            .copied()
-            .unwrap_or(Decimal::ZERO);
+        let current_price = current_prices.get(&pos.token_id).copied().unwrap_or(avg);
 
         let unrealized = match pos.side.as_str() {
             "long" => (current_price - avg) * size,

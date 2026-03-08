@@ -15,6 +15,8 @@ pub struct Trade {
     pub timestamp: String,
 }
 
+const DEFAULT_STARTING_BALANCE: &str = "1000.00";
+
 pub struct DryRunDb {
     conn: Connection,
 }
@@ -64,12 +66,12 @@ impl DryRunDb {
 
         if !has_balance {
             self.conn.execute(
-                "INSERT INTO state (key, value) VALUES ('starting_balance', '1000.00')",
-                [],
+                "INSERT INTO state (key, value) VALUES ('starting_balance', ?1)",
+                params![DEFAULT_STARTING_BALANCE],
             )?;
             self.conn.execute(
-                "INSERT INTO state (key, value) VALUES ('balance', '1000.00')",
-                [],
+                "INSERT INTO state (key, value) VALUES ('balance', ?1)",
+                params![DEFAULT_STARTING_BALANCE],
             )?;
         }
 
