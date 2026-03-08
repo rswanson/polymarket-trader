@@ -4,18 +4,26 @@ mod commands;
 mod output;
 mod signer;
 
-use anyhow::Result;
 use clap::Parser;
 use cli::{AccountCommand, Cli, Command, MarketsCommand, OrdersCommand, PricesCommand};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
     let cli = Cli::parse();
+    let json = cli.json;
+
+    if let Err(e) = run(cli).await {
+        output::print_error(json, &format!("{e:#}"));
+        std::process::exit(1);
+    }
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     let json = cli.json;
 
     match &cli.command {
@@ -54,8 +62,7 @@ async fn main() -> Result<()> {
                 )
             })?;
             let kms_signer = signer::create_kms_signer(kms_key_id).await?;
-            let client =
-                client::create_authenticated_client(&cli.clob_host, &kms_signer).await?;
+            let client = client::create_authenticated_client(&cli.clob_host, &kms_signer).await?;
 
             match &args.command {
                 OrdersCommand::List { all } => {
@@ -109,8 +116,7 @@ async fn main() -> Result<()> {
                 )
             })?;
             let kms_signer = signer::create_kms_signer(kms_key_id).await?;
-            let client =
-                client::create_authenticated_client(&cli.clob_host, &kms_signer).await?;
+            let client = client::create_authenticated_client(&cli.clob_host, &kms_signer).await?;
 
             match &args.command {
                 AccountCommand::Balance => {

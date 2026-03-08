@@ -1,7 +1,12 @@
 use comfy_table::{ContentArrangement, Table};
 use serde::Serialize;
 
-pub fn print_output<T: Serialize>(json_mode: bool, headers: &[&str], rows: Vec<Vec<String>>, data: &T) {
+pub fn print_output<T: Serialize>(
+    json_mode: bool,
+    headers: &[&str],
+    rows: Vec<Vec<String>>,
+    data: &T,
+) {
     if json_mode {
         println!("{}", serde_json::to_string_pretty(data).unwrap());
     } else {
@@ -13,10 +18,6 @@ pub fn print_output<T: Serialize>(json_mode: bool, headers: &[&str], rows: Vec<V
         }
         println!("{table}");
     }
-}
-
-pub fn print_json<T: Serialize>(data: &T) {
-    println!("{}", serde_json::to_string_pretty(data).unwrap());
 }
 
 pub fn print_error(json_mode: bool, msg: &str) {
