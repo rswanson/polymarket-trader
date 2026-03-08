@@ -191,7 +191,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
                     commands::dry_run::place_limit(
                         &clob_client,
-                        &resolved.token_id_str,
+                        &resolved,
                         side,
                         price,
                         size,
@@ -207,14 +207,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 } => {
                     let resolved =
                         resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
-                    commands::dry_run::place_market(
-                        &clob_client,
-                        &resolved.token_id_str,
-                        side,
-                        amount,
-                        json,
-                    )
-                    .await?;
+                    commands::dry_run::place_market(&clob_client, &resolved, side, amount, json)
+                        .await?;
                 }
                 DryRunCommand::Cancel { trade_id } => {
                     commands::dry_run::cancel(trade_id, json)?;

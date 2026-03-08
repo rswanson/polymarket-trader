@@ -16,12 +16,26 @@ use super::{parse_side, parse_token_id};
 use crate::dry_run::db::{DryRunDb, Trade};
 use crate::dry_run::portfolio;
 use crate::output::print_output;
+use crate::resolve::ResolvedMarket;
 
 fn truncate_token_id(token_id: &str) -> String {
     if token_id.len() > 12 {
         token_id.chars().take(12).collect::<String>() + "..."
     } else {
         token_id.to_string()
+    }
+}
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.chars().count() > max_len {
+        let end = s
+            .char_indices()
+            .nth(max_len.saturating_sub(3))
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        format!("{}...", &s[..end])
+    } else {
+        s.to_string()
     }
 }
 
@@ -47,6 +61,7 @@ struct TradeResult {
 }
 
 /// Shared logic for recording a dry-run trade (used by both place_limit and place_market).
+#[allow(clippy::too_many_arguments)]
 fn record_trade(
     db: &DryRunDb,
     token_id: &str,
@@ -55,6 +70,9 @@ fn record_trade(
     size: Decimal,
     midpoint: Decimal,
     json: bool,
+    slug: Option<&str>,
+    question: Option<&str>,
+    outcome: Option<&str>,
 ) -> Result<()> {
     let mut balance =
         Decimal::from_str(&db.get_balance()?).context("invalid balance in database")?;
@@ -92,6 +110,7 @@ fn record_trade(
     };
 
     db.insert_trade(&trade)?;
+    db.upsert_metadata(token_id, slug, question, outcome)?;
     db.update_balance(&balance.to_string())?;
 
     let result = TradeResult {
@@ -121,7 +140,7 @@ fn record_trade(
 
 pub async fn place_limit<S: State>(
     client: &Client<S>,
-    token_id: &str,
+    resolved: &ResolvedMarket,
     side_str: &str,
     _price_str: &str,
     size_str: &str,
@@ -129,16 +148,27 @@ pub async fn place_limit<S: State>(
 ) -> Result<()> {
     let side = parse_side(side_str)?;
     let size = Decimal::from_str(size_str).map_err(|e| anyhow::anyhow!("Invalid size: {e}"))?;
-    let midpoint = fetch_midpoint(client, token_id).await?;
+    let midpoint = fetch_midpoint(client, &resolved.token_id_str).await?;
     let cost = (midpoint * size).round_dp(2);
 
     let db = DryRunDb::open()?;
-    record_trade(&db, token_id, side, cost, size, midpoint, json)
+    record_trade(
+        &db,
+        &resolved.token_id_str,
+        side,
+        cost,
+        size,
+        midpoint,
+        json,
+        resolved.slug.as_deref(),
+        resolved.question.as_deref(),
+        resolved.outcome.as_deref(),
+    )
 }
 
 pub async fn place_market<S: State>(
     client: &Client<S>,
-    token_id: &str,
+    resolved: &ResolvedMarket,
     side_str: &str,
     amount_str: &str,
     json: bool,
@@ -146,16 +176,28 @@ pub async fn place_market<S: State>(
     let side = parse_side(side_str)?;
     let amount =
         Decimal::from_str(amount_str).map_err(|e| anyhow::anyhow!("Invalid amount: {e}"))?;
-    let midpoint = fetch_midpoint(client, token_id).await?;
+    let midpoint = fetch_midpoint(client, &resolved.token_id_str).await?;
     anyhow::ensure!(
         !midpoint.is_zero(),
-        "Midpoint is zero for token {token_id}, cannot calculate size"
+        "Midpoint is zero for token {}, cannot calculate size",
+        resolved.token_id_str
     );
     let size = amount / midpoint;
     let cost = amount.round_dp(2);
 
     let db = DryRunDb::open()?;
-    record_trade(&db, token_id, side, cost, size, midpoint, json)
+    record_trade(
+        &db,
+        &resolved.token_id_str,
+        side,
+        cost,
+        size,
+        midpoint,
+        json,
+        resolved.slug.as_deref(),
+        resolved.question.as_deref(),
+        resolved.outcome.as_deref(),
+    )
 }
 
 #[derive(Serialize)]
@@ -204,13 +246,31 @@ pub fn positions(json: bool) -> Result<()> {
     let db = DryRunDb::open()?;
     let trades = db.all_trades()?;
     let positions = portfolio::compute_positions(&trades)?;
+    let metadata = db.all_metadata()?;
 
-    let headers = &["Token ID", "Side", "Size", "Avg Price", "Total Cost"];
+    let headers = &[
+        "Market",
+        "Outcome",
+        "Side",
+        "Size",
+        "Avg Price",
+        "Total Cost",
+    ];
     let rows: Vec<Vec<String>> = positions
         .iter()
         .map(|p| {
+            let meta = metadata.get(&p.token_id);
+            let market_name = meta
+                .and_then(|m| m.question.as_deref())
+                .map(|q| truncate_str(q, 40))
+                .unwrap_or_else(|| truncate_token_id(&p.token_id));
+            let outcome_name = meta
+                .and_then(|m| m.outcome.as_deref())
+                .unwrap_or("-")
+                .to_string();
             vec![
-                truncate_token_id(&p.token_id),
+                market_name,
+                outcome_name,
                 p.side.clone(),
                 p.net_size.clone(),
                 p.avg_price.clone(),
@@ -226,14 +286,27 @@ pub fn positions(json: bool) -> Result<()> {
 pub fn trades(limit: usize, json: bool) -> Result<()> {
     let db = DryRunDb::open()?;
     let trades = db.list_trades(limit)?;
+    let metadata = db.all_metadata()?;
 
-    let headers = &["ID", "Token", "Side", "Price", "Size", "Cost", "Time"];
+    let headers = &[
+        "ID", "Market", "Outcome", "Side", "Price", "Size", "Cost", "Time",
+    ];
     let rows: Vec<Vec<String>> = trades
         .iter()
         .map(|t| {
+            let meta = metadata.get(&t.token_id);
+            let market_name = meta
+                .and_then(|m| m.question.as_deref())
+                .map(|q| truncate_str(q, 40))
+                .unwrap_or_else(|| truncate_token_id(&t.token_id));
+            let outcome_name = meta
+                .and_then(|m| m.outcome.as_deref())
+                .unwrap_or("-")
+                .to_string();
             vec![
                 t.id.clone(),
-                truncate_token_id(&t.token_id),
+                market_name,
+                outcome_name,
                 t.side.clone(),
                 t.price.clone(),
                 t.size.clone(),
@@ -251,6 +324,7 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
     let db = DryRunDb::open()?;
     let all_trades = db.all_trades()?;
     let positions = portfolio::compute_positions(&all_trades)?;
+    let metadata = db.all_metadata()?;
 
     // Fetch all midpoint prices concurrently
     let futs: Vec<_> = positions
@@ -282,7 +356,8 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
         println!();
 
         let headers = &[
-            "Token ID",
+            "Market",
+            "Outcome",
             "Side",
             "Size",
             "Avg Price",
@@ -293,8 +368,18 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
             .positions
             .iter()
             .map(|p| {
+                let meta = metadata.get(&p.token_id);
+                let market_name = meta
+                    .and_then(|m| m.question.as_deref())
+                    .map(|q| truncate_str(q, 40))
+                    .unwrap_or_else(|| truncate_token_id(&p.token_id));
+                let outcome_name = meta
+                    .and_then(|m| m.outcome.as_deref())
+                    .unwrap_or("-")
+                    .to_string();
                 vec![
-                    truncate_token_id(&p.token_id),
+                    market_name,
+                    outcome_name,
                     p.side.clone(),
                     p.size.clone(),
                     p.avg_price.clone(),
@@ -354,6 +439,9 @@ mod tests {
             dec("200"),
             dec("0.50"),
             false,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -375,6 +463,9 @@ mod tests {
             dec("100"),
             dec("20.0"),
             false,
+            None,
+            None,
+            None,
         );
 
         assert!(result.is_err());
@@ -398,6 +489,9 @@ mod tests {
             dec("100"),
             dec("0.50"),
             false,
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(db.get_balance().unwrap(), "950.00");
@@ -411,6 +505,9 @@ mod tests {
             dec("50"),
             dec("0.60"),
             false,
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(db.get_balance().unwrap(), "980.00");
@@ -428,6 +525,9 @@ mod tests {
             dec("10"),
             dec("5.0"),
             false,
+            None,
+            None,
+            None,
         );
 
         assert!(result.is_err());
@@ -447,6 +547,9 @@ mod tests {
             dec("5"),
             dec("5.0"),
             false,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -459,6 +562,9 @@ mod tests {
             dec("10"),
             dec("5.0"),
             false,
+            None,
+            None,
+            None,
         );
 
         assert!(result.is_err());
@@ -482,6 +588,9 @@ mod tests {
             dec("2000"),
             dec("0.50"),
             false,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -499,6 +608,9 @@ mod tests {
             dec("10"),
             dec("10.0"),
             false,
+            None,
+            None,
+            None,
         )
         .unwrap();
         record_trade(
@@ -509,6 +621,9 @@ mod tests {
             dec("20"),
             dec("10.0"),
             false,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -524,6 +639,9 @@ mod tests {
             dec("15"),
             dec("10.0"),
             false,
+            None,
+            None,
+            None,
         );
         assert!(result.is_err()); // only 10 held for tok_a
     }

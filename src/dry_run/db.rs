@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -13,6 +14,14 @@ pub struct Trade {
     pub size: String,
     pub cost: String,
     pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketMetadata {
+    pub token_id: String,
+    pub slug: Option<String>,
+    pub question: Option<String>,
+    pub outcome: Option<String>,
 }
 
 const DEFAULT_STARTING_BALANCE: &str = "1000.00";
@@ -64,6 +73,13 @@ impl DryRunDb {
             CREATE TABLE IF NOT EXISTS state (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS market_metadata (
+                token_id TEXT PRIMARY KEY,
+                slug     TEXT,
+                question TEXT,
+                outcome  TEXT
             );",
         )?;
 
@@ -219,7 +235,67 @@ impl DryRunDb {
         Ok(result)
     }
 
+    pub fn upsert_metadata(
+        &self,
+        token_id: &str,
+        slug: Option<&str>,
+        question: Option<&str>,
+        outcome: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO market_metadata (token_id, slug, question, outcome)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(token_id) DO UPDATE SET
+                slug = excluded.slug,
+                question = excluded.question,
+                outcome = excluded.outcome",
+            params![token_id, slug, question, outcome],
+        )?;
+        Ok(())
+    }
+
+    #[allow(dead_code, reason = "used in tests and by future display commands")]
+    pub fn get_metadata(&self, token_id: &str) -> Result<Option<MarketMetadata>> {
+        let meta = self
+            .conn
+            .query_row(
+                "SELECT token_id, slug, question, outcome FROM market_metadata WHERE token_id = ?1",
+                params![token_id],
+                |row| {
+                    Ok(MarketMetadata {
+                        token_id: row.get(0)?,
+                        slug: row.get(1)?,
+                        question: row.get(2)?,
+                        outcome: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(meta)
+    }
+
+    pub fn all_metadata(&self) -> Result<HashMap<String, MarketMetadata>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT token_id, slug, question, outcome FROM market_metadata")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(MarketMetadata {
+                token_id: row.get(0)?,
+                slug: row.get(1)?,
+                question: row.get(2)?,
+                outcome: row.get(3)?,
+            })
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let meta = row?;
+            map.insert(meta.token_id.clone(), meta);
+        }
+        Ok(map)
+    }
+
     pub fn reset(&self, starting_balance: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM market_metadata", [])?;
         self.conn.execute("DELETE FROM trades", [])?;
         self.conn.execute("DELETE FROM state", [])?;
         self.conn.execute(
@@ -390,6 +466,63 @@ mod tests {
         assert_eq!(db.all_trades().unwrap().len(), 0);
         assert_eq!(db.get_balance().unwrap(), "2000.00");
         assert_eq!(db.get_starting_balance().unwrap(), "2000.00");
+    }
+
+    #[test]
+    fn store_and_retrieve_metadata() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.upsert_metadata(
+            "tok_a",
+            Some("inflation-2026"),
+            Some("Will inflation exceed 3%?"),
+            Some("Yes"),
+        )
+        .unwrap();
+        let meta = db.get_metadata("tok_a").unwrap().unwrap();
+        assert_eq!(meta.slug.as_deref(), Some("inflation-2026"));
+        assert_eq!(meta.question.as_deref(), Some("Will inflation exceed 3%?"));
+        assert_eq!(meta.outcome.as_deref(), Some("Yes"));
+    }
+
+    #[test]
+    fn get_metadata_missing_returns_none() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        assert!(db.get_metadata("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn upsert_metadata_updates_existing() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.upsert_metadata("tok_a", Some("old-slug"), Some("Old question"), Some("Yes"))
+            .unwrap();
+        db.upsert_metadata("tok_a", Some("new-slug"), Some("New question"), Some("No"))
+            .unwrap();
+        let meta = db.get_metadata("tok_a").unwrap().unwrap();
+        assert_eq!(meta.slug.as_deref(), Some("new-slug"));
+        assert_eq!(meta.question.as_deref(), Some("New question"));
+        assert_eq!(meta.outcome.as_deref(), Some("No"));
+    }
+
+    #[test]
+    fn reset_clears_metadata() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.upsert_metadata("tok_a", Some("slug"), Some("question"), Some("Yes"))
+            .unwrap();
+        db.reset("1000.00").unwrap();
+        assert!(db.get_metadata("tok_a").unwrap().is_none());
+    }
+
+    #[test]
+    fn all_metadata_returns_map() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.upsert_metadata("tok_a", Some("slug-a"), Some("Question A"), Some("Yes"))
+            .unwrap();
+        db.upsert_metadata("tok_b", Some("slug-b"), Some("Question B"), Some("No"))
+            .unwrap();
+        let map = db.all_metadata().unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["tok_a"].slug.as_deref(), Some("slug-a"));
+        assert_eq!(map["tok_b"].slug.as_deref(), Some("slug-b"));
     }
 
     #[test]
