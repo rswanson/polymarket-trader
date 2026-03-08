@@ -49,6 +49,7 @@ fn display_names(metadata: &HashMap<String, MarketMetadata>, token_id: &str) -> 
 struct PnlData {
     report: portfolio::PnlReport,
     metadata: HashMap<String, MarketMetadata>,
+    all_trades: Vec<Trade>,
 }
 
 async fn build_pnl_data<S: State>(client: &Client<S>) -> Result<PnlData> {
@@ -75,7 +76,11 @@ async fn build_pnl_data<S: State>(client: &Client<S>) -> Result<PnlData> {
         &current_balance,
     )?;
 
-    Ok(PnlData { report, metadata })
+    Ok(PnlData {
+        report,
+        metadata,
+        all_trades,
+    })
 }
 
 #[derive(Serialize)]
@@ -166,6 +171,28 @@ fn record_trade(
     print_output(json, headers, rows, &result);
 
     Ok(())
+}
+
+/// Resolve a 1-based position index to a (token_id, optional slug) pair.
+pub fn resolve_position_index(index: usize) -> Result<(String, Option<String>)> {
+    let db = DryRunDb::open()?;
+    let trades = db.all_trades()?;
+    let positions = portfolio::compute_positions(&trades)?;
+    let pos = positions
+        .get(
+            index
+                .checked_sub(1)
+                .context("Position index must be >= 1")?,
+        )
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Position index {index} out of range. You have {} open positions.",
+                positions.len()
+            )
+        })?;
+    let metadata = db.get_metadata(&pos.token_id)?;
+    let slug = metadata.and_then(|m| m.slug);
+    Ok((pos.token_id.clone(), slug))
 }
 
 pub async fn close<S: State>(
@@ -287,6 +314,7 @@ pub fn positions(json: bool) -> Result<()> {
     let metadata = db.all_metadata()?;
 
     let headers = &[
+        "#",
         "Market",
         "Outcome",
         "Side",
@@ -296,9 +324,11 @@ pub fn positions(json: bool) -> Result<()> {
     ];
     let rows: Vec<Vec<String>> = positions
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(i, p)| {
             let (market_name, outcome_name) = display_names(&metadata, &p.token_id);
             vec![
+                (i + 1).to_string(),
                 market_name,
                 outcome_name,
                 p.side.clone(),
@@ -395,7 +425,78 @@ struct ResetResult {
     message: String,
 }
 
-pub async fn portfolio<S: State>(client: &Client<S>, json: bool) -> Result<()> {
+#[derive(Serialize)]
+struct SummaryReport {
+    starting_balance: String,
+    current_balance: String,
+    realized_pnl: String,
+    unrealized_pnl: String,
+    net_pnl: String,
+    closed_trades: usize,
+    wins: usize,
+    losses: usize,
+    win_rate: String,
+    position_value: String,
+    total_value: String,
+}
+
+pub async fn summary<S: State>(client: &Client<S>, json: bool) -> Result<()> {
+    let data = build_pnl_data(client).await?;
+    let report = &data.report;
+    let realized = portfolio::compute_realized_pnl(&data.all_trades)?;
+
+    let unrealized = Decimal::from_str(&report.total_unrealized_pnl)?;
+    let net_pnl = realized.total_realized_pnl + unrealized;
+    let total_closed = realized.closed_trades;
+    let win_rate = if total_closed > 0 {
+        format!(
+            "{}/{} ({:.0}%)",
+            realized.wins,
+            total_closed,
+            (realized.wins as f64 / total_closed as f64) * 100.0
+        )
+    } else {
+        "N/A".to_string()
+    };
+
+    let summary = SummaryReport {
+        starting_balance: report.starting_balance.clone(),
+        current_balance: report.current_balance.clone(),
+        realized_pnl: realized.total_realized_pnl.to_string(),
+        unrealized_pnl: report.total_unrealized_pnl.clone(),
+        net_pnl: net_pnl.to_string(),
+        closed_trades: total_closed,
+        wins: realized.wins,
+        losses: realized.losses,
+        win_rate: win_rate.clone(),
+        position_value: report.position_value.clone(),
+        total_value: report.total_value.clone(),
+    };
+
+    if json {
+        print_output(true, &[], vec![], &summary);
+    } else {
+        println!("Realized P&L:   ${}", realized.total_realized_pnl);
+        println!("Unrealized P&L: ${}", report.total_unrealized_pnl);
+        println!("Net P&L:        ${net_pnl}");
+        println!();
+        println!("Closed Trades:  {total_closed}");
+        println!("Win Rate:       {win_rate}");
+        println!();
+        println!("Cash:           ${}", report.current_balance);
+        println!("Position Value: ${}", report.position_value);
+        println!("Total Value:    ${}", report.total_value);
+    }
+
+    Ok(())
+}
+
+pub async fn portfolio<S: State>(
+    client: &Client<S>,
+    take_profit: Option<f64>,
+    stop_loss: Option<f64>,
+    json: bool,
+) -> Result<()> {
     let data = build_pnl_data(client).await?;
     let report = &data.report;
 
@@ -405,8 +506,13 @@ pub async fn portfolio<S: State>(client: &Client<S>, json: bool) -> Result<()> {
         println!("Balance: ${}", report.current_balance);
         println!();
 
+        let show_status = take_profit.is_some() || stop_loss.is_some();
+        let tp = take_profit.unwrap_or(15.0);
+        let sl = stop_loss.unwrap_or(20.0);
+
         if !report.positions.is_empty() {
-            let headers = &[
+            let mut headers: Vec<&str> = vec![
+                "#",
                 "Market",
                 "Outcome",
                 "Side",
@@ -416,12 +522,17 @@ pub async fn portfolio<S: State>(client: &Client<S>, json: bool) -> Result<()> {
                 "Value",
                 "P&L",
             ];
+            if show_status {
+                headers.push("Status");
+            }
             let rows: Vec<Vec<String>> = report
                 .positions
                 .iter()
-                .map(|p| {
+                .enumerate()
+                .map(|(i, p)| {
                     let (market_name, outcome_name) = display_names(&data.metadata, &p.token_id);
-                    vec![
+                    let mut row = vec![
+                        (i + 1).to_string(),
                         market_name,
                         outcome_name,
                         p.side.clone(),
@@ -430,10 +541,24 @@ pub async fn portfolio<S: State>(client: &Client<S>, json: bool) -> Result<()> {
                         p.current_price.clone(),
                         format!("${}", p.value),
                         format!("${}", p.unrealized_pnl),
-                    ]
+                    ];
+                    if show_status {
+                        let avg = Decimal::from_str(&p.avg_price).unwrap_or(Decimal::ZERO);
+                        let current = Decimal::from_str(&p.current_price).unwrap_or(Decimal::ZERO);
+                        let status = check_alert_status(avg, current, tp, sl);
+                        let label = match status {
+                            AlertStatus::TakeProfitBreached => "TP!",
+                            AlertStatus::ApproachingTakeProfit => "~TP",
+                            AlertStatus::StopLossBreached => "SL!",
+                            AlertStatus::ApproachingStopLoss => "~SL",
+                            AlertStatus::Normal => "ok",
+                        };
+                        row.push(label.to_string());
+                    }
+                    row
                 })
                 .collect();
-            print_output(false, headers, rows, &report.positions);
+            print_output(false, &headers, rows, &report.positions);
             println!();
         }
 
@@ -441,9 +566,163 @@ pub async fn portfolio<S: State>(client: &Client<S>, json: bool) -> Result<()> {
         println!("Position Value:  ${}", report.position_value);
         println!("Total Value:     ${}", report.total_value);
         println!("Net P&L:         ${}", report.total_pnl);
+
+        let realized = portfolio::compute_realized_pnl(&data.all_trades)?;
+        if realized.total_realized_pnl != Decimal::ZERO {
+            println!("Realized P&L:    ${}", realized.total_realized_pnl);
+        }
     }
 
     Ok(())
+}
+
+#[derive(Debug, PartialEq)]
+enum AlertStatus {
+    Normal,
+    ApproachingTakeProfit,
+    TakeProfitBreached,
+    ApproachingStopLoss,
+    StopLossBreached,
+}
+
+fn check_alert_status(
+    avg_price: Decimal,
+    current_price: Decimal,
+    take_profit_pct: f64,
+    stop_loss_pct: f64,
+) -> AlertStatus {
+    if avg_price.is_zero() {
+        return AlertStatus::Normal;
+    }
+
+    use rust_decimal::prelude::ToPrimitive;
+    let pnl_pct = ((current_price - avg_price) / avg_price * Decimal::from(100))
+        .to_f64()
+        .unwrap_or(0.0);
+
+    if pnl_pct >= take_profit_pct {
+        AlertStatus::TakeProfitBreached
+    } else if pnl_pct >= take_profit_pct * 0.8 {
+        AlertStatus::ApproachingTakeProfit
+    } else if pnl_pct <= -stop_loss_pct {
+        AlertStatus::StopLossBreached
+    } else if pnl_pct <= -stop_loss_pct * 0.8 {
+        AlertStatus::ApproachingStopLoss
+    } else {
+        AlertStatus::Normal
+    }
+}
+
+pub async fn alerts<S: State>(
+    client: &Client<S>,
+    take_profit: f64,
+    stop_loss: f64,
+    interval_secs: u64,
+    json: bool,
+) -> Result<()> {
+    use std::io::{self, Write};
+    use tokio::time::{Duration, interval};
+
+    let db = DryRunDb::open()?;
+    let all_trades = db.all_trades()?;
+    let positions = portfolio::compute_positions(&all_trades)?;
+    let metadata = db.all_metadata()?;
+
+    anyhow::ensure!(!positions.is_empty(), "No open positions to monitor");
+
+    eprintln!(
+        "Monitoring {} positions (TP: {take_profit}%, SL: {stop_loss}%, interval: {interval_secs}s)",
+        positions.len()
+    );
+    eprintln!("Press Ctrl+C to stop.\n");
+
+    let mut ticker = interval(Duration::from_secs(interval_secs));
+    let num_lines = positions.len();
+    let mut first_tick = true;
+
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                if !json && !first_tick {
+                    eprint!("\x1B[{}A", num_lines);
+                }
+                first_tick = false;
+
+                let futs: Vec<_> = positions
+                    .iter()
+                    .map(|pos| async move {
+                        let mid = fetch_midpoint(client, &pos.token_id).await;
+                        (pos, mid)
+                    })
+                    .collect();
+                let results = futures::future::join_all(futs).await;
+
+                for (pos, mid_result) in results {
+                    let (market_name, _outcome_name) = display_names(&metadata, &pos.token_id);
+                    let avg = Decimal::from_str(&pos.avg_price).unwrap_or(Decimal::ZERO);
+
+                    match mid_result {
+                        Ok(mid) => {
+                            let status = check_alert_status(avg, mid, take_profit, stop_loss);
+                            let pnl_pct = if !avg.is_zero() {
+                                ((mid - avg) / avg * Decimal::from(100)).round_dp(1)
+                            } else {
+                                Decimal::ZERO
+                            };
+
+                            let indicator = match status {
+                                AlertStatus::TakeProfitBreached => "!! TP BREACHED",
+                                AlertStatus::ApproachingTakeProfit => " ~ approaching TP",
+                                AlertStatus::StopLossBreached => "!! SL BREACHED",
+                                AlertStatus::ApproachingStopLoss => " ~ approaching SL",
+                                AlertStatus::Normal => "  ok",
+                            };
+
+                            if json {
+                                let tick = serde_json::json!({
+                                    "market": market_name,
+                                    "avg_price": pos.avg_price,
+                                    "current_price": mid.to_string(),
+                                    "pnl_pct": pnl_pct.to_string(),
+                                    "status": format!("{:?}", status),
+                                });
+                                println!("{}", serde_json::to_string(&tick)?);
+                            } else {
+                                let sign = if pnl_pct >= Decimal::ZERO { "+" } else { "" };
+                                eprintln!(
+                                    "  {:<40} {sign}{pnl_pct}%  {indicator}",
+                                    market_name,
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            if !json {
+                                eprintln!("  {:<40} Error: {e}", market_name);
+                            }
+                        }
+                    }
+                }
+
+                if !json {
+                    io::stderr().flush()?;
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Print a note when outcome was not explicitly specified, to improve discoverability.
+pub fn print_outcome_note(resolved: &ResolvedMarket, outcome_was_specified: bool) {
+    if !outcome_was_specified && let Some(outcome) = &resolved.outcome {
+        eprintln!(
+            "Note: defaulted to {outcome} outcome. Use --outcome to select a different side."
+        );
+    }
 }
 
 pub fn reset(balance: &str, json: bool) -> Result<()> {
@@ -739,5 +1018,72 @@ mod tests {
         )
         .unwrap();
         assert_eq!(db.net_position_size("tok_a").unwrap(), dec("6"));
+    }
+
+    #[test]
+    fn alert_status_no_alert() {
+        let status = check_alert_status(dec("0.50"), dec("0.525"), 15.0, 20.0);
+        assert_eq!(status, AlertStatus::Normal);
+    }
+
+    #[test]
+    fn alert_status_approaching_take_profit() {
+        // avg 0.50, current 0.56 → 12% gain, TP at 15% → approaching (>80% of 15 = 12)
+        let status = check_alert_status(dec("0.50"), dec("0.56"), 15.0, 20.0);
+        assert_eq!(status, AlertStatus::ApproachingTakeProfit);
+    }
+
+    #[test]
+    fn alert_status_breached_take_profit() {
+        // avg 0.50, current 0.60 → 20% gain, TP at 15% → breached
+        let status = check_alert_status(dec("0.50"), dec("0.60"), 15.0, 20.0);
+        assert_eq!(status, AlertStatus::TakeProfitBreached);
+    }
+
+    #[test]
+    fn alert_status_approaching_stop_loss() {
+        // avg 0.50, current 0.42 → -16% loss, SL at 20%, 80% of 20 = 16 → approaching
+        let status = check_alert_status(dec("0.50"), dec("0.42"), 15.0, 20.0);
+        assert_eq!(status, AlertStatus::ApproachingStopLoss);
+    }
+
+    #[test]
+    fn alert_status_breached_stop_loss() {
+        // avg 0.50, current 0.38 → -24% loss, SL at 20% → breached
+        let status = check_alert_status(dec("0.50"), dec("0.38"), 15.0, 20.0);
+        assert_eq!(status, AlertStatus::StopLossBreached);
+    }
+
+    #[test]
+    fn resolve_position_by_index() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        let resolved_a = test_resolved("tok_a");
+        let resolved_b = test_resolved("tok_b");
+        record_trade(
+            &db,
+            &resolved_a,
+            Side::Buy,
+            dec("50.00"),
+            dec("10"),
+            dec("0.50"),
+            false,
+        )
+        .unwrap();
+        record_trade(
+            &db,
+            &resolved_b,
+            Side::Buy,
+            dec("30.00"),
+            dec("10"),
+            dec("0.30"),
+            false,
+        )
+        .unwrap();
+
+        let trades = db.all_trades().unwrap();
+        let positions = portfolio::compute_positions(&trades).unwrap();
+        assert_eq!(positions.len(), 2);
+        assert_eq!(positions[0].token_id, "tok_a");
+        assert_eq!(positions[1].token_id, "tok_b");
     }
 }

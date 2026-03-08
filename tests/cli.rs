@@ -217,8 +217,41 @@ fn dry_run_help() {
             .and(predicate::str::contains("market"))
             .and(predicate::str::contains("positions"))
             .and(predicate::str::contains("pnl"))
-            .and(predicate::str::contains("reset")),
+            .and(predicate::str::contains("reset"))
+            .and(predicate::str::contains("summary"))
+            .and(predicate::str::contains("alerts")),
     );
+}
+
+#[test]
+fn dry_run_summary_help() {
+    cmd()
+        .args(["dry-run", "summary", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("trading performance"));
+}
+
+#[test]
+fn dry_run_alerts_help() {
+    cmd()
+        .args(["dry-run", "alerts", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("take-profit")
+                .and(predicate::str::contains("stop-loss"))
+                .and(predicate::str::contains("interval")),
+        );
+}
+
+#[test]
+fn dry_run_help_shows_new_commands() {
+    cmd()
+        .args(["dry-run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("summary").and(predicate::str::contains("alerts")));
 }
 
 #[test]

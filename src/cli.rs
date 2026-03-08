@@ -200,7 +200,7 @@ pub enum DryRunCommand {
     Limit {
         /// Market slug or token ID
         market: String,
-        /// Outcome name (e.g., "Yes", "No")
+        /// Outcome name (e.g., "Yes", "No"). For binary markets, defaults to Yes if omitted.
         #[arg(long)]
         outcome: Option<String>,
         /// Side: "buy" or "sell"
@@ -214,7 +214,7 @@ pub enum DryRunCommand {
     Market {
         /// Market slug or token ID
         market: String,
-        /// Outcome name (e.g., "Yes", "No")
+        /// Outcome name (e.g., "Yes", "No"). For binary markets, defaults to Yes if omitted.
         #[arg(long)]
         outcome: Option<String>,
         /// Side: "buy" or "sell"
@@ -235,9 +235,9 @@ pub enum DryRunCommand {
     Pnl,
     /// Close a position (sell at current market price)
     Close {
-        /// Market slug or token ID
+        /// Market slug, token ID, or position index (from portfolio)
         market: String,
-        /// Outcome name
+        /// Outcome name (e.g., "Yes", "No"). For binary markets, defaults to Yes if omitted.
         #[arg(long)]
         outcome: Option<String>,
         /// Number of shares to sell (default: entire position)
@@ -245,7 +245,28 @@ pub enum DryRunCommand {
         size: Option<String>,
     },
     /// Show full portfolio: positions with names, prices, P&L, and totals
-    Portfolio,
+    Portfolio {
+        /// Take-profit alert threshold percentage
+        #[arg(long)]
+        take_profit: Option<f64>,
+        /// Stop-loss alert threshold percentage
+        #[arg(long)]
+        stop_loss: Option<f64>,
+    },
+    /// Show trading performance summary (realized + unrealized P&L, win rate)
+    Summary,
+    /// Monitor positions for take-profit and stop-loss thresholds
+    Alerts {
+        /// Take-profit threshold percentage (default: 15)
+        #[arg(long, default_value = "15")]
+        take_profit: f64,
+        /// Stop-loss threshold percentage (default: 20)
+        #[arg(long, default_value = "20")]
+        stop_loss: f64,
+        /// Polling interval in seconds (default: 60, minimum: 5)
+        #[arg(long, default_value = "60", value_parser = clap::value_parser!(u64).range(5..))]
+        interval: u64,
+    },
     /// Reset dry-run state
     Reset {
         #[arg(long, default_value = "1000.00")]
