@@ -83,8 +83,8 @@ pub enum MarketsCommand {
         /// Outcome name (applies to all watched markets)
         #[arg(long)]
         outcome: Option<String>,
-        /// Refresh interval in seconds
-        #[arg(long, default_value = "5")]
+        /// Refresh interval in seconds (minimum 1)
+        #[arg(long, default_value = "5", value_parser = clap::value_parser!(u64).range(1..))]
         interval: u64,
     },
 }

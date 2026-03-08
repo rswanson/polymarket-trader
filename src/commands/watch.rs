@@ -6,11 +6,11 @@ use chrono::Local;
 use polymarket_client_sdk::auth::state::State;
 use polymarket_client_sdk::clob::Client;
 use polymarket_client_sdk::clob::types::request::MidpointRequest;
-use polymarket_client_sdk::types::{Decimal, U256};
+use polymarket_client_sdk::types::Decimal;
 use serde::Serialize;
-use std::str::FromStr;
 use tokio::time::{Duration, interval};
 
+use crate::output::truncate;
 use crate::resolve::ResolvedMarket;
 
 #[derive(Serialize)]
@@ -34,19 +34,6 @@ fn format_delta(delta: Decimal) -> String {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let end = s
-            .char_indices()
-            .nth(max.saturating_sub(3))
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
-        format!("{}...", &s[..end])
-    }
-}
-
 pub async fn watch<S: State>(
     client: &Client<S>,
     resolved_markets: &[ResolvedMarket],
@@ -59,75 +46,78 @@ pub async fn watch<S: State>(
     let mut first_tick = true;
 
     loop {
-        ticker.tick().await;
+        tokio::select! {
+            _ = ticker.tick() => {
+                // Move cursor up to overwrite previous output (except on first tick)
+                if !json && !first_tick {
+                    eprint!("\x1B[{}A", num_lines);
+                }
+                first_tick = false;
 
-        // Move cursor up to overwrite previous output (except on first tick)
-        if !json && !first_tick {
-            eprint!("\x1B[{}A", num_lines);
-        }
-        first_tick = false;
+                for resolved in resolved_markets {
+                    let token_id = resolved.token_id;
+                    let request = MidpointRequest::builder().token_id(token_id).build();
+                    let mid = match client.midpoint(&request).await {
+                        Ok(resp) => resp.mid,
+                        Err(e) => {
+                            if json {
+                                // Skip this tick for this token
+                                continue;
+                            } else {
+                                let label = resolved.slug.as_deref().unwrap_or(&resolved.token_id_str);
+                                eprintln!(
+                                    "  {} [{}]  Error: {e}",
+                                    truncate(label, 50),
+                                    resolved.outcome.as_deref().unwrap_or("?")
+                                );
+                                continue;
+                            }
+                        }
+                    };
 
-        for resolved in resolved_markets {
-            let token_id = U256::from_str(&resolved.token_id_str)?;
-            let request = MidpointRequest::builder().token_id(token_id).build();
-            let mid = match client.midpoint(&request).await {
-                Ok(resp) => resp.mid,
-                Err(e) => {
+                    let start = *start_prices
+                        .entry(resolved.token_id_str.clone())
+                        .or_insert(mid);
+                    let delta = price_delta(mid, start);
+
                     if json {
-                        // Skip this tick for this token
-                        continue;
+                        let tick = PriceTick {
+                            slug: resolved.slug.clone().unwrap_or_default(),
+                            outcome: resolved.outcome.clone().unwrap_or_default(),
+                            price: mid.to_string(),
+                            delta: delta.to_string(),
+                            time: Local::now().format("%H:%M:%S").to_string(),
+                        };
+                        println!("{}", serde_json::to_string(&tick)?);
                     } else {
-                        let label = resolved
-                            .slug
+                        let question = resolved
+                            .question
                             .as_deref()
+                            .or(resolved.slug.as_deref())
                             .unwrap_or(&resolved.token_id_str);
+                        let outcome = resolved.outcome.as_deref().unwrap_or("?");
+                        let time = Local::now().format("%H:%M:%S");
                         eprintln!(
-                            "  {} [{}]  Error: {e}",
-                            truncate(label, 50),
-                            resolved.outcome.as_deref().unwrap_or("?")
+                            "  {} [{}]  {}  ({})  {}",
+                            truncate(question, 50),
+                            outcome,
+                            mid,
+                            format_delta(delta),
+                            time
                         );
-                        continue;
                     }
                 }
-            };
 
-            let start = *start_prices
-                .entry(resolved.token_id_str.clone())
-                .or_insert(mid);
-            let delta = price_delta(mid, start);
-
-            if json {
-                let tick = PriceTick {
-                    slug: resolved.slug.clone().unwrap_or_default(),
-                    outcome: resolved.outcome.clone().unwrap_or_default(),
-                    price: mid.to_string(),
-                    delta: delta.to_string(),
-                    time: Local::now().format("%H:%M:%S").to_string(),
-                };
-                println!("{}", serde_json::to_string(&tick)?);
-            } else {
-                let question = resolved
-                    .question
-                    .as_deref()
-                    .or(resolved.slug.as_deref())
-                    .unwrap_or(&resolved.token_id_str);
-                let outcome = resolved.outcome.as_deref().unwrap_or("?");
-                let time = Local::now().format("%H:%M:%S");
-                eprintln!(
-                    "  {} [{}]  {}  ({})  {}",
-                    truncate(question, 50),
-                    outcome,
-                    mid,
-                    format_delta(delta),
-                    time
-                );
+                if !json {
+                    io::stderr().flush()?;
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                break;
             }
         }
-
-        if !json {
-            io::stderr().flush()?;
-        }
     }
+    Ok(())
 }
 
 #[cfg(test)]

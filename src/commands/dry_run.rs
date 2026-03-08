@@ -19,24 +19,7 @@ use crate::output::print_output;
 use crate::resolve::ResolvedMarket;
 
 fn truncate_token_id(token_id: &str) -> String {
-    if token_id.len() > 12 {
-        token_id.chars().take(12).collect::<String>() + "..."
-    } else {
-        token_id.to_string()
-    }
-}
-
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.chars().count() > max_len {
-        let end = s
-            .char_indices()
-            .nth(max_len.saturating_sub(3))
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
-        format!("{}...", &s[..end])
-    } else {
-        s.to_string()
-    }
+    crate::output::truncate(token_id, 12)
 }
 
 async fn fetch_midpoint<S: State>(client: &Client<S>, token_id_str: &str) -> Result<Decimal> {
@@ -88,8 +71,7 @@ fn record_trade(
         );
         balance -= cost;
     } else {
-        let held = db.net_position_size(token_id)?;
-        let held_dec = Decimal::from_f64_retain(held).unwrap_or_default();
+        let held_dec = db.net_position_size(token_id)?;
         anyhow::ensure!(
             held_dec >= size,
             "Insufficient position: hold {held_dec} shares, trying to sell {size}"
@@ -145,8 +127,7 @@ pub async fn close<S: State>(
     json: bool,
 ) -> Result<()> {
     let db = DryRunDb::open()?;
-    let held = db.net_position_size(&resolved.token_id_str)?;
-    let held_dec = Decimal::from_f64_retain(held).unwrap_or_default();
+    let held_dec = db.net_position_size(&resolved.token_id_str)?;
 
     anyhow::ensure!(held_dec > Decimal::ZERO, "No open position for this market");
 
@@ -304,7 +285,7 @@ pub fn positions(json: bool) -> Result<()> {
             let meta = metadata.get(&p.token_id);
             let market_name = meta
                 .and_then(|m| m.question.as_deref())
-                .map(|q| truncate_str(q, 40))
+                .map(|q| crate::output::truncate(q, 40))
                 .unwrap_or_else(|| truncate_token_id(&p.token_id));
             let outcome_name = meta
                 .and_then(|m| m.outcome.as_deref())
@@ -339,7 +320,7 @@ pub fn trades(limit: usize, json: bool) -> Result<()> {
             let meta = metadata.get(&t.token_id);
             let market_name = meta
                 .and_then(|m| m.question.as_deref())
-                .map(|q| truncate_str(q, 40))
+                .map(|q| crate::output::truncate(q, 40))
                 .unwrap_or_else(|| truncate_token_id(&t.token_id));
             let outcome_name = meta
                 .and_then(|m| m.outcome.as_deref())
@@ -415,7 +396,7 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
                 let meta = metadata.get(&p.token_id);
                 let market_name = meta
                     .and_then(|m| m.question.as_deref())
-                    .map(|q| truncate_str(q, 40))
+                    .map(|q| crate::output::truncate(q, 40))
                     .unwrap_or_else(|| truncate_token_id(&p.token_id));
                 let outcome_name = meta
                     .and_then(|m| m.outcome.as_deref())
@@ -494,7 +475,7 @@ pub async fn portfolio<S: State>(client: &Client<S>, json: bool) -> Result<()> {
                     let meta = metadata.get(&p.token_id);
                     let market_name = meta
                         .and_then(|m| m.question.as_deref())
-                        .map(|q| truncate_str(q, 35))
+                        .map(|q| crate::output::truncate(q, 35))
                         .unwrap_or_else(|| truncate_token_id(&p.token_id));
                     let outcome_name = meta
                         .and_then(|m| m.outcome.as_deref())
@@ -807,8 +788,7 @@ mod tests {
         assert_eq!(db.get_balance().unwrap(), "1010.00");
 
         // Position should be zero
-        let net = db.net_position_size("tok_a").unwrap();
-        assert!((net).abs() < 1e-9);
+        assert_eq!(db.net_position_size("tok_a").unwrap(), Decimal::ZERO);
     }
 
     #[test]
@@ -842,7 +822,6 @@ mod tests {
             None,
         )
         .unwrap();
-        let net = db.net_position_size("tok_a").unwrap();
-        assert!((net - 6.0).abs() < 1e-9);
+        assert_eq!(db.net_position_size("tok_a").unwrap(), dec("6"));
     }
 }

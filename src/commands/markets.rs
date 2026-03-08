@@ -10,7 +10,7 @@ use polymarket_client_sdk::types::Decimal;
 use serde::Serialize;
 use std::str::FromStr;
 
-use crate::output::print_output;
+use crate::output::{print_output, truncate};
 
 #[derive(Serialize)]
 struct GammaMarketRow {
@@ -49,19 +49,6 @@ fn format_outcomes(m: &Market) -> String {
             .join(", "),
         (Some(names), None) => names.join(", "),
         _ => String::new(),
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let end = s
-            .char_indices()
-            .nth(max.saturating_sub(3))
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
-        format!("{}...", &s[..end])
     }
 }
 

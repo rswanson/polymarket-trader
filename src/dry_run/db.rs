@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,17 +224,26 @@ impl DryRunDb {
 
     /// Get the net position size for a specific token_id.
     /// Returns the sum of buy sizes minus sell sizes.
-    pub fn net_position_size(&self, token_id: &str) -> Result<f64> {
-        let result: f64 = self.conn.query_row(
-            "SELECT COALESCE(
-                SUM(CASE side WHEN 'buy' THEN CAST(size AS REAL) ELSE -CAST(size AS REAL) END),
-                0.0
-             )
-             FROM trades WHERE token_id = ?1",
-            params![token_id],
-            |row| row.get(0),
-        )?;
-        Ok(result)
+    pub fn net_position_size(&self, token_id: &str) -> Result<Decimal> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT side, size FROM trades WHERE token_id = ?1")?;
+        let rows = stmt.query_map(params![token_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut net = Decimal::ZERO;
+        for row in rows {
+            let (side, size_str) = row?;
+            let size = Decimal::from_str(&size_str)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            match side.as_str() {
+                "buy" => net += size,
+                "sell" => net -= size,
+                _ => {}
+            }
+        }
+        Ok(net)
     }
 
     pub fn upsert_metadata(
@@ -313,6 +324,7 @@ impl DryRunDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     fn make_trade(id: &str, token_id: &str, side: &str, price: &str, size: &str) -> Trade {
         let cost = {
@@ -418,9 +430,10 @@ mod tests {
             .unwrap();
         db.insert_trade(&make_trade("t2", "tok_a", "buy", "0.60", "5"))
             .unwrap();
-
-        let net = db.net_position_size("tok_a").unwrap();
-        assert!((net - 15.0).abs() < 1e-9);
+        assert_eq!(
+            db.net_position_size("tok_a").unwrap(),
+            Decimal::from_str("15").unwrap()
+        );
     }
 
     #[test]
@@ -430,16 +443,16 @@ mod tests {
             .unwrap();
         db.insert_trade(&make_trade("t2", "tok_a", "sell", "0.60", "3"))
             .unwrap();
-
-        let net = db.net_position_size("tok_a").unwrap();
-        assert!((net - 7.0).abs() < 1e-9);
+        assert_eq!(
+            db.net_position_size("tok_a").unwrap(),
+            Decimal::from_str("7").unwrap()
+        );
     }
 
     #[test]
     fn net_position_size_unknown_token_is_zero() {
         let db = DryRunDb::open_in_memory().unwrap();
-        let net = db.net_position_size("nonexistent").unwrap();
-        assert!((net).abs() < 1e-9);
+        assert_eq!(db.net_position_size("nonexistent").unwrap(), Decimal::ZERO);
     }
 
     #[test]
@@ -449,9 +462,14 @@ mod tests {
             .unwrap();
         db.insert_trade(&make_trade("t2", "tok_b", "buy", "0.70", "20"))
             .unwrap();
-
-        assert!((db.net_position_size("tok_a").unwrap() - 10.0).abs() < 1e-9);
-        assert!((db.net_position_size("tok_b").unwrap() - 20.0).abs() < 1e-9);
+        assert_eq!(
+            db.net_position_size("tok_a").unwrap(),
+            Decimal::from_str("10").unwrap()
+        );
+        assert_eq!(
+            db.net_position_size("tok_b").unwrap(),
+            Decimal::from_str("20").unwrap()
+        );
     }
 
     #[test]
