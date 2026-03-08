@@ -197,6 +197,17 @@ fn dry_run_reset_json_is_valid_json() {
     assert_eq!(parsed["balance"], "1000.00");
 }
 
+// ── Markets commands (hit real Gamma API) ──
+
+#[test]
+fn markets_trending_succeeds() {
+    cmd()
+        .args(["markets", "trending", "--limit", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Slug"));
+}
+
 // ── Subcommand help ──
 
 #[test]
