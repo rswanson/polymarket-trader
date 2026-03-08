@@ -2,6 +2,7 @@ mod cli;
 mod client;
 mod commands;
 mod dry_run;
+mod gamma;
 mod output;
 mod signer;
 
