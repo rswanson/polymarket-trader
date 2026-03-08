@@ -115,10 +115,10 @@ pub async fn fund_usdc(fork: &ForkEnv, target: Address, amount: U256) {
         let usdc = IERC20::new(USDC, &provider);
         let result = usdc.balanceOf(target).call().await;
 
-        if let Ok(bal) = result {
-            if bal >= amount {
-                return;
-            }
+        if let Ok(bal) = result
+            && bal >= amount
+        {
+            return;
         }
     }
 

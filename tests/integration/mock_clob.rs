@@ -6,7 +6,10 @@
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Request, State},
+    http::StatusCode,
+    middleware::{self, Next},
+    response::Response,
     routing::{delete, get, post},
 };
 use serde_json::{Value, json};
@@ -18,6 +21,7 @@ use std::{
 /// Shared state for the mock CLOB server.
 pub struct MockClobState {
     /// The RPC URL of the backing Anvil node (for reference by tests).
+    #[allow(dead_code)]
     pub rpc_url: String,
     /// All order bodies received via `POST /order`.
     pub orders_received: Mutex<Vec<Value>>,
@@ -45,10 +49,17 @@ pub async fn start_mock_clob(rpc_url: String) -> (SocketAddr, Arc<MockClobState>
         .route("/data/orders", get(handle_get_orders))
         .route("/cancel-all", delete(handle_cancel_all))
         .route("/cancel-market-orders", delete(handle_cancel_market_orders))
+        // Market metadata (needed for order building/signing)
+        .route("/fee-rate", get(handle_fee_rate))
+        .route("/tick-size", get(handle_tick_size))
+        .route("/neg-risk", get(handle_neg_risk))
         // Balance
         .route("/balance-allowance", get(handle_balance_allowance))
         // Trades
         .route("/data/trades", get(handle_get_trades))
+        // Catch-all fallback for unmatched routes
+        .fallback(handle_fallback)
+        .layer(middleware::from_fn(log_requests))
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -112,6 +123,8 @@ async fn handle_post_order(
 async fn handle_get_orders() -> Json<Value> {
     Json(json!({
         "data": [],
+        "limit": 100,
+        "count": 0,
         "next_cursor": "LTE="
     }))
 }
@@ -145,6 +158,27 @@ async fn handle_cancel_market_orders() -> Json<Value> {
     }))
 }
 
+/// `GET /fee-rate` — return mock fee rate of 20 bps (0.20%).
+async fn handle_fee_rate() -> Json<Value> {
+    Json(json!({
+        "base_fee": 20
+    }))
+}
+
+/// `GET /tick-size` — return mock tick size of 0.01.
+async fn handle_tick_size() -> Json<Value> {
+    Json(json!({
+        "minimum_tick_size": "0.01"
+    }))
+}
+
+/// `GET /neg-risk` — return false (standard CTF exchange).
+async fn handle_neg_risk() -> Json<Value> {
+    Json(json!({
+        "neg_risk": false
+    }))
+}
+
 /// `GET /balance-allowance` — return mock balance of 10 USDC (6 decimals).
 async fn handle_balance_allowance() -> Json<Value> {
     Json(json!({
@@ -159,6 +193,29 @@ async fn handle_balance_allowance() -> Json<Value> {
 async fn handle_get_trades() -> Json<Value> {
     Json(json!({
         "data": [],
+        "limit": 100,
+        "count": 0,
         "next_cursor": "LTE="
     }))
+}
+
+/// Logging middleware — prints every request method + URI to stderr for test debugging.
+async fn log_requests(request: Request, next: Next) -> Response {
+    eprintln!(
+        "[mock-clob] {} {}",
+        request.method(),
+        request.uri()
+    );
+    next.run(request).await
+}
+
+/// Catch-all fallback for unmatched routes — returns 404 with an error message.
+async fn handle_fallback(request: Request) -> (StatusCode, String) {
+    let msg = format!(
+        "mock CLOB: no handler for {} {}",
+        request.method(),
+        request.uri()
+    );
+    eprintln!("[mock-clob] FALLBACK: {msg}");
+    (StatusCode::NOT_FOUND, msg)
 }

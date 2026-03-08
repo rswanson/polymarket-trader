@@ -36,3 +36,4 @@ axum = "0.8"
 alloy = { version = "1.6", features = ["provider-anvil-node", "sol-types", "contract", "signer-local", "provider-http", "rpc-types"] }
 hex = "0.4"
 tower = "0.5"
+reqwest = "0.12"
