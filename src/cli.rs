@@ -34,6 +34,8 @@ pub enum Command {
     Orders(OrdersArgs),
     /// Account information commands
     Account(AccountArgs),
+    /// Simulated trading (paper trading) commands
+    DryRun(DryRunArgs),
 }
 
 #[derive(Parser)]
@@ -126,5 +128,49 @@ pub enum AccountCommand {
     Trades {
         #[arg(long, default_value = "25")]
         limit: usize,
+    },
+}
+
+#[derive(Parser)]
+pub struct DryRunArgs {
+    #[command(subcommand)]
+    pub command: DryRunCommand,
+}
+
+#[derive(Subcommand)]
+pub enum DryRunCommand {
+    /// Simulate a limit order (fills at current midpoint)
+    Limit {
+        token_id: String,
+        /// Side: "buy" or "sell"
+        side: String,
+        /// Price (for reference, fill is at midpoint)
+        price: String,
+        /// Size in shares
+        size: String,
+    },
+    /// Simulate a market order (fills at current midpoint)
+    Market {
+        token_id: String,
+        /// Side: "buy" or "sell"
+        side: String,
+        /// Amount in USDC
+        amount: String,
+    },
+    /// Remove a simulated trade
+    Cancel { trade_id: String },
+    /// Show current simulated positions
+    Positions,
+    /// Show simulated trade history
+    Trades {
+        #[arg(long, default_value = "25")]
+        limit: usize,
+    },
+    /// Show profit and loss report
+    Pnl,
+    /// Reset dry-run state
+    Reset {
+        #[arg(long, default_value = "1000.00")]
+        balance: String,
     },
 }

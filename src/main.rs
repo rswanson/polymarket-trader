@@ -6,7 +6,7 @@ mod output;
 mod signer;
 
 use clap::Parser;
-use cli::{AccountCommand, Cli, Command, MarketsCommand, OrdersCommand, PricesCommand};
+use cli::{AccountCommand, Cli, Command, DryRunCommand, MarketsCommand, OrdersCommand, PricesCommand};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -127,6 +127,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     commands::account::trades(&client, *limit, json).await?;
                 }
             }
+        }
+        Command::DryRun(_args) => {
+            // Command handlers will be wired up in a later task.
+            let _ = _args;
+            todo!("dry-run command handlers not yet implemented");
         }
     }
 
