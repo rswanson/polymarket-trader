@@ -57,7 +57,7 @@ pub enum MarketsCommand {
         /// Include closed/settled markets in results
         #[arg(long)]
         include_closed: bool,
-        /// Sort by: volume, volume_24hr, liquidity, created_at
+        /// Sort by: volume, liquidity, startDate, createdAt
         #[arg(long, default_value = "volume")]
         sort: String,
         /// Minimum total volume filter
