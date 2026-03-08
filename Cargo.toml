@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 polymarket-client-sdk = { version = "0.4", features = ["clob", "gamma"] }
-alloy = { version = "1.6", features = ["signer-aws"] }
+alloy = { version = "1.6", features = ["signer-aws", "signer-local"] }
 aws-config = "1.8"
 aws-sdk-kms = "1.99"
 clap = { version = "4", features = ["derive", "env"] }
@@ -17,6 +17,7 @@ comfy-table = "7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
+async-trait = "0.1"
 rusqlite = { version = "0.34", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -24,6 +25,15 @@ dirs = "6"
 rust_decimal = "1.40"
 futures = "0.3"
 
+[features]
+default = []
+integration-tests = []
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+axum = "0.8"
+alloy = { version = "1.6", features = ["provider-anvil-node", "sol-types", "contract", "signer-local", "provider-http", "rpc-types"] }
+hex = "0.4"
+tower = "0.5"
+reqwest = "0.12"

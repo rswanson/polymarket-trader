@@ -5,32 +5,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Development Commands
 
 ```bash
-cargo build                      # Dev build
-cargo build --release            # Release build
-cargo clippy -- -D warnings      # Lint (must pass clean)
-cargo fmt                        # Format code
-cargo fmt --check                # Verify formatting
-RUST_LOG=debug cargo run -- ...  # Run with debug logging
+cargo build                                      # Dev build
+cargo build --release                            # Release build
+cargo clippy -- -D warnings                      # Lint (must pass clean)
+cargo fmt                                        # Format code
+cargo fmt --check                                # Verify formatting
+cargo test                                       # Unit + CLI integration tests
+cargo test --features integration-tests          # Fork-based integration tests (requires POLYGON_RPC_URL)
+RUST_LOG=debug cargo run -- ...                  # Run with debug logging
 ```
 
-No test suite yet — verify changes compile and pass clippy.
+Tests: `cargo test` runs unit tests and CLI integration tests. `cargo test --features integration-tests` runs
+chain fork tests using an Anvil fork + mock CLOB server (requires `POLYGON_RPC_URL` env var pointing to a
+Polygon RPC endpoint).
 
 ## Architecture
 
-Rust CLI (edition 2024) for trading on Polymarket's CLOB API. Uses AWS KMS for wallet signing via `alloy-signer-aws` — no private keys on disk.
+Rust CLI (edition 2024) for trading on Polymarket's CLOB API. Supports AWS KMS signing via `--kms-key-id` or local private key signing via `--private-key`.
 
 ### Auth Split
 
 Commands are split by authentication requirement:
 - **Unauthenticated** (`markets`, `prices`, `dry-run`): Create `Client<Unauthenticated>` — no KMS needed
-- **Authenticated** (`orders`, `account`): Require `--kms-key-id` / `POLYMARKET_KMS_KEY_ID`, create `Client<Authenticated<Normal>>` via EIP-712 L1 auth + L2 HMAC
+- **Authenticated** (`orders`, `account`): Require `--kms-key-id` / `POLYMARKET_KMS_KEY_ID` or `--private-key` / `POLYMARKET_PRIVATE_KEY`, create `Client<Authenticated<Normal>>` via EIP-712 L1 auth + L2 HMAC
 
 This is enforced at compile time by the SDK's type-state pattern on `Client<S>`.
 
 ### Module Layout
 
 - `cli.rs` — Clap derive definitions for all commands and args
-- `signer.rs` — AWS KMS signer construction (`AwsSigner` from alloy)
+- `signer.rs` — Signer construction (`AnySigner` enum: AWS KMS or local private key)
 - `client.rs` — Polymarket SDK client constructors (unauth + auth)
 - `output.rs` — Output formatting (`--json` for machine-readable, tables for humans)
 - `commands/` — One file per command group, each with standalone async functions
@@ -51,8 +55,10 @@ Errors propagate via `anyhow::Result` to `main()`, which formats them (JSON or s
 
 ## Environment Variables
 
-- `POLYMARKET_KMS_KEY_ID` — AWS KMS key ID (required for orders/account)
+- `POLYMARKET_KMS_KEY_ID` — AWS KMS key ID (for orders/account, mutually exclusive with private key)
+- `POLYMARKET_PRIVATE_KEY` — Hex-encoded private key (for orders/account, mutually exclusive with KMS)
 - `POLYMARKET_CLOB_HOST` — CLOB API host (default: `https://clob.polymarket.com`)
+- `POLYGON_RPC_URL` — Polygon RPC endpoint (only for integration tests)
 - `RUST_LOG` — Tracing log level filter
 - Standard AWS credential env vars (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, etc.)
 

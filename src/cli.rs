@@ -11,6 +11,10 @@ pub struct Cli {
     #[arg(long, env = "POLYMARKET_KMS_KEY_ID", global = true)]
     pub kms_key_id: Option<String>,
 
+    /// Local private key for wallet signing (alternative to KMS)
+    #[arg(long, env = "POLYMARKET_PRIVATE_KEY", global = true)]
+    pub private_key: Option<String>,
+
     /// Polymarket CLOB API host
     #[arg(
         long,

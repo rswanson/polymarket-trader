@@ -110,14 +110,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         // Orders and Account require authentication
         Command::Orders(args) => {
-            let kms_key_id = cli.kms_key_id.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "KMS key ID is required for order commands. \
-                     Set --kms-key-id or POLYMARKET_KMS_KEY_ID env var."
-                )
-            })?;
-            let kms_signer = signer::create_kms_signer(kms_key_id).await?;
-            let client = client::create_authenticated_client(&cli.clob_host, &kms_signer).await?;
+            let signer = signer::resolve_signer(&cli.private_key, &cli.kms_key_id).await?;
+            let client = client::create_authenticated_client(&cli.clob_host, &signer).await?;
 
             let gamma_client = gamma::create_gamma_client();
 
@@ -136,7 +130,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
                     commands::orders::place_limit(
                         &client,
-                        &kms_signer,
+                        &signer,
                         &resolved.token_id_str,
                         side,
                         price,
@@ -155,7 +149,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
                     commands::orders::place_market(
                         &client,
-                        &kms_signer,
+                        &signer,
                         &resolved.token_id_str,
                         side,
                         amount,
@@ -172,14 +166,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Command::Account(args) => {
-            let kms_key_id = cli.kms_key_id.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "KMS key ID is required for account commands. \
-                     Set --kms-key-id or POLYMARKET_KMS_KEY_ID env var."
-                )
-            })?;
-            let kms_signer = signer::create_kms_signer(kms_key_id).await?;
-            let client = client::create_authenticated_client(&cli.clob_host, &kms_signer).await?;
+            let signer = signer::resolve_signer(&cli.private_key, &cli.kms_key_id).await?;
+            let client = client::create_authenticated_client(&cli.clob_host, &signer).await?;
 
             match &args.command {
                 AccountCommand::Balance => {
