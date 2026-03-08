@@ -1,5 +1,6 @@
 mod cli;
 mod client;
+mod commands;
 mod output;
 mod signer;
 
