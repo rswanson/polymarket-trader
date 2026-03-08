@@ -54,9 +54,9 @@ pub enum MarketsCommand {
         /// Search query text
         #[arg(long)]
         query: Option<String>,
-        /// Show only active markets (default: true)
-        #[arg(long, default_value = "true")]
-        active: bool,
+        /// Include closed/settled markets in results
+        #[arg(long)]
+        include_closed: bool,
         /// Sort by: volume, volume_24hr, liquidity, created_at
         #[arg(long, default_value = "volume")]
         sort: String,

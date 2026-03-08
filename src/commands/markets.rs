@@ -53,10 +53,15 @@ fn format_outcomes(m: &Market) -> String {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max.saturating_sub(3)])
+        let end = s
+            .char_indices()
+            .nth(max.saturating_sub(3))
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        format!("{}...", &s[..end])
     }
 }
 
@@ -73,7 +78,7 @@ pub async fn list_markets(
     gamma_client: &gamma::Client,
     limit: usize,
     query: Option<&str>,
-    active: bool,
+    include_closed: bool,
     sort: &str,
     min_volume: Option<&str>,
     json: bool,
@@ -91,7 +96,6 @@ pub async fn list_markets(
             .flat_map(|event| event.markets.unwrap_or_default())
             .collect()
     } else {
-        let closed = if active { Some(false) } else { None };
         let vol_min = match min_volume {
             Some(v) => Some(Decimal::from_str(v).context("Invalid min_volume value")?),
             None => None,
@@ -101,8 +105,10 @@ pub async fn list_markets(
         request.limit = Some(limit as i32);
         request.order = Some(sort.to_string());
         request.ascending = Some(false);
-        request.closed = closed;
         request.volume_num_min = vol_min;
+        if !include_closed {
+            request.closed = Some(false);
+        }
 
         gamma_client
             .markets(&request)
@@ -153,7 +159,8 @@ pub async fn show_market<S: State>(
                 tokens,
             }
         }
-        Err(_) => {
+        Err(e) => {
+            tracing::debug!("Gamma slug lookup failed, falling back to CLOB: {e}");
             // Fall back to CLOB by condition_id
             let m = clob_client
                 .market(market)

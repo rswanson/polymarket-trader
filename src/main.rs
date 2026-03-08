@@ -38,7 +38,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 MarketsCommand::List {
                     limit,
                     query,
-                    active,
+                    include_closed,
                     sort,
                     min_volume,
                 } => {
@@ -46,7 +46,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         &gamma_client,
                         *limit,
                         query.as_deref(),
-                        *active,
+                        *include_closed,
                         sort,
                         min_volume.as_deref(),
                         json,
@@ -63,7 +63,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         &gamma_client,
                         *limit,
                         None,
-                        true,
+                        false,
                         "volume_24hr",
                         None,
                         json,
