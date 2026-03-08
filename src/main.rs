@@ -1,5 +1,6 @@
 mod cli;
 mod client;
+mod output;
 mod signer;
 
 use clap::Parser;
