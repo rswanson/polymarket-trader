@@ -158,23 +158,39 @@ fn dry_run_cancel_nonexistent_trade() {
 // ── Argument validation ──
 
 #[test]
-fn orders_without_kms_key_fails() {
+fn orders_without_wallet_key_fails() {
     cmd()
         .args(["orders", "list"])
         .env_remove("POLYMARKET_KMS_KEY_ID")
+        .env_remove("POLYMARKET_PRIVATE_KEY")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("KMS key ID is required"));
+        .stderr(predicate::str::contains("Wallet key is required"));
 }
 
 #[test]
-fn account_without_kms_key_fails() {
+fn account_without_wallet_key_fails() {
     cmd()
         .args(["account", "balance"])
         .env_remove("POLYMARKET_KMS_KEY_ID")
+        .env_remove("POLYMARKET_PRIVATE_KEY")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("KMS key ID is required"));
+        .stderr(predicate::str::contains("Wallet key is required"));
+}
+
+#[test]
+fn both_private_key_and_kms_fails() {
+    cmd()
+        .args(["orders", "list"])
+        .env("POLYMARKET_KMS_KEY_ID", "some-key-id")
+        .env(
+            "POLYMARKET_PRIVATE_KEY",
+            "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        )
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Cannot specify both"));
 }
 
 // ── JSON output validation ──

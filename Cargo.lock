@@ -3578,6 +3578,7 @@ dependencies = [
  "alloy",
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "aws-config",
  "aws-sdk-kms",
  "chrono",
