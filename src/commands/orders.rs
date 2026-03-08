@@ -3,13 +3,15 @@ use anyhow::Result;
 use polymarket_client_sdk::auth::Normal;
 use polymarket_client_sdk::auth::state::Authenticated;
 use polymarket_client_sdk::clob::Client;
+use polymarket_client_sdk::clob::types::Amount;
 use polymarket_client_sdk::clob::types::request::{CancelMarketOrderRequest, OrdersRequest};
-use polymarket_client_sdk::clob::types::{Amount, Side};
-use polymarket_client_sdk::types::{Decimal, U256};
+use polymarket_client_sdk::clob::types::response::CancelOrdersResponse;
+use polymarket_client_sdk::types::Decimal;
 use serde::Serialize;
 use std::str::FromStr;
 
-use crate::output::{print_error, print_output};
+use super::{parse_side, parse_token_id};
+use crate::output::print_output;
 
 #[derive(Serialize)]
 struct OrderRow {
@@ -35,23 +37,29 @@ struct CancelResult {
     not_canceled: Vec<String>,
 }
 
-fn parse_side(s: &str) -> Result<Side> {
-    match s.to_lowercase().as_str() {
-        "buy" => Ok(Side::Buy),
-        "sell" => Ok(Side::Sell),
-        other => Err(anyhow::anyhow!(
-            "Invalid side '{other}', expected 'buy' or 'sell'"
-        )),
-    }
+fn print_cancel_result(json: bool, response: &CancelOrdersResponse) {
+    let result = CancelResult {
+        canceled: response.canceled.clone(),
+        not_canceled: response
+            .not_canceled
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect(),
+    };
+
+    let headers = &["Canceled", "Not Canceled"];
+    let rows = vec![vec![
+        result.canceled.join(", "),
+        result.not_canceled.join(", "),
+    ]];
+    print_output(json, headers, rows, &result);
 }
 
 pub async fn list_orders(
     client: &Client<Authenticated<Normal>>,
-    #[allow(unused_variables)] all: bool,
+    _all: bool, // TODO: SDK does not support status filtering yet
     json: bool,
 ) -> Result<()> {
-    // TODO: The SDK's OrdersRequest does not currently support filtering by status.
-    // The `all` flag is accepted but has no effect until the SDK adds status filtering.
     let request = OrdersRequest::builder().build();
     let page = client
         .orders(&request, None)
@@ -63,7 +71,7 @@ pub async fn list_orders(
         .iter()
         .map(|o| OrderRow {
             id: o.id.clone(),
-            market: format!("{}", o.market),
+            market: o.market.to_string(),
             side: o.side.to_string(),
             price: o.price.to_string(),
             original_size: o.original_size.to_string(),
@@ -110,8 +118,7 @@ pub async fn place_limit<S2: Signer>(
     size_str: &str,
     json: bool,
 ) -> Result<()> {
-    let token_id =
-        U256::from_str(token_id_str).map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
+    let token_id = parse_token_id(token_id_str)?;
     let side = parse_side(side_str)?;
     let price = Decimal::from_str(price_str).map_err(|e| anyhow::anyhow!("Invalid price: {e}"))?;
     let size = Decimal::from_str(size_str).map_err(|e| anyhow::anyhow!("Invalid size: {e}"))?;
@@ -136,22 +143,18 @@ pub async fn place_limit<S2: Signer>(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to post order: {e}"))?;
 
+    if !response.success {
+        anyhow::bail!(
+            "Order failed: {}",
+            response.error_msg.as_deref().unwrap_or("unknown error")
+        );
+    }
+
     let result = PostOrderResult {
         success: response.success,
         order_id: response.order_id.clone(),
         error_msg: response.error_msg.clone(),
     };
-
-    if !response.success {
-        print_error(
-            json,
-            &format!(
-                "Order failed: {}",
-                response.error_msg.as_deref().unwrap_or("unknown error")
-            ),
-        );
-        return Ok(());
-    }
 
     let headers = &["Success", "Order ID"];
     let rows = vec![vec![result.success.to_string(), result.order_id.clone()]];
@@ -168,8 +171,7 @@ pub async fn place_market<S2: Signer>(
     amount_str: &str,
     json: bool,
 ) -> Result<()> {
-    let token_id =
-        U256::from_str(token_id_str).map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
+    let token_id = parse_token_id(token_id_str)?;
     let side = parse_side(side_str)?;
     let amount_dec =
         Decimal::from_str(amount_str).map_err(|e| anyhow::anyhow!("Invalid amount: {e}"))?;
@@ -195,22 +197,18 @@ pub async fn place_market<S2: Signer>(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to post order: {e}"))?;
 
+    if !response.success {
+        anyhow::bail!(
+            "Order failed: {}",
+            response.error_msg.as_deref().unwrap_or("unknown error")
+        );
+    }
+
     let result = PostOrderResult {
         success: response.success,
         order_id: response.order_id.clone(),
         error_msg: response.error_msg.clone(),
     };
-
-    if !response.success {
-        print_error(
-            json,
-            &format!(
-                "Order failed: {}",
-                response.error_msg.as_deref().unwrap_or("unknown error")
-            ),
-        );
-        return Ok(());
-    }
 
     let headers = &["Success", "Order ID"];
     let rows = vec![vec![result.success.to_string(), result.order_id.clone()]];
@@ -229,21 +227,7 @@ pub async fn cancel_order(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to cancel order: {e}"))?;
 
-    let result = CancelResult {
-        canceled: response.canceled.clone(),
-        not_canceled: response
-            .not_canceled
-            .iter()
-            .map(|(k, v)| format!("{k}: {v}"))
-            .collect(),
-    };
-
-    let headers = &["Canceled", "Not Canceled"];
-    let rows = vec![vec![
-        result.canceled.join(", "),
-        result.not_canceled.join(", "),
-    ]];
-    print_output(json, headers, rows, &result);
+    print_cancel_result(json, &response);
 
     Ok(())
 }
@@ -273,21 +257,7 @@ pub async fn cancel_all(
             .map_err(|e| anyhow::anyhow!("Failed to cancel all orders: {e}"))?,
     };
 
-    let result = CancelResult {
-        canceled: response.canceled.clone(),
-        not_canceled: response
-            .not_canceled
-            .iter()
-            .map(|(k, v)| format!("{k}: {v}"))
-            .collect(),
-    };
-
-    let headers = &["Canceled", "Not Canceled"];
-    let rows = vec![vec![
-        result.canceled.join(", "),
-        result.not_canceled.join(", "),
-    ]];
-    print_output(json, headers, rows, &result);
+    print_cancel_result(json, &response);
 
     Ok(())
 }

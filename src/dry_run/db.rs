@@ -27,6 +27,15 @@ fn db_path() -> Result<PathBuf> {
 }
 
 impl DryRunDb {
+    /// Open an in-memory database (for testing).
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        let db = Self { conn };
+        db.ensure_schema()?;
+        Ok(db)
+    }
+
     pub fn open() -> Result<Self> {
         let path = db_path()?;
         if let Some(parent) = path.parent() {
@@ -175,7 +184,39 @@ impl DryRunDb {
     }
 
     pub fn all_trades(&self) -> Result<Vec<Trade>> {
-        self.list_trades(usize::MAX)
+        let mut stmt = self.conn.prepare(
+            "SELECT id, token_id, side, price, size, cost, timestamp
+             FROM trades ORDER BY timestamp DESC",
+        )?;
+        let trades = stmt
+            .query_map([], |row| {
+                Ok(Trade {
+                    id: row.get(0)?,
+                    token_id: row.get(1)?,
+                    side: row.get(2)?,
+                    price: row.get(3)?,
+                    size: row.get(4)?,
+                    cost: row.get(5)?,
+                    timestamp: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(trades)
+    }
+
+    /// Get the net position size for a specific token_id.
+    /// Returns the sum of buy sizes minus sell sizes.
+    pub fn net_position_size(&self, token_id: &str) -> Result<f64> {
+        let result: f64 = self.conn.query_row(
+            "SELECT COALESCE(
+                SUM(CASE side WHEN 'buy' THEN CAST(size AS REAL) ELSE -CAST(size AS REAL) END),
+                0.0
+             )
+             FROM trades WHERE token_id = ?1",
+            params![token_id],
+            |row| row.get(0),
+        )?;
+        Ok(result)
     }
 
     pub fn reset(&self, starting_balance: &str) -> Result<()> {
@@ -190,5 +231,178 @@ impl DryRunDb {
             params![starting_balance],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_trade(id: &str, token_id: &str, side: &str, price: &str, size: &str) -> Trade {
+        let cost = {
+            let p: f64 = price.parse().unwrap();
+            let s: f64 = size.parse().unwrap();
+            format!("{:.2}", p * s)
+        };
+        Trade {
+            id: id.to_string(),
+            token_id: token_id.to_string(),
+            side: side.to_string(),
+            price: price.to_string(),
+            size: size.to_string(),
+            cost,
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn schema_sets_default_balance() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        assert_eq!(db.get_balance().unwrap(), DEFAULT_STARTING_BALANCE);
+        assert_eq!(db.get_starting_balance().unwrap(), DEFAULT_STARTING_BALANCE);
+    }
+
+    #[test]
+    fn balance_update_round_trip() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.update_balance("500.50").unwrap();
+        assert_eq!(db.get_balance().unwrap(), "500.50");
+        // Starting balance should be unchanged
+        assert_eq!(db.get_starting_balance().unwrap(), DEFAULT_STARTING_BALANCE);
+    }
+
+    #[test]
+    fn insert_and_get_trade() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        let trade = make_trade("t1", "token_abc", "buy", "0.50", "10");
+        db.insert_trade(&trade).unwrap();
+
+        let fetched = db.get_trade("t1").unwrap().expect("trade should exist");
+        assert_eq!(fetched.id, "t1");
+        assert_eq!(fetched.token_id, "token_abc");
+        assert_eq!(fetched.side, "buy");
+        assert_eq!(fetched.size, "10");
+    }
+
+    #[test]
+    fn get_nonexistent_trade_returns_none() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        assert!(db.get_trade("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_trade_returns_it_and_removes() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        let trade = make_trade("t1", "token_abc", "buy", "0.50", "10");
+        db.insert_trade(&trade).unwrap();
+
+        let deleted = db.delete_trade("t1").unwrap().expect("should return trade");
+        assert_eq!(deleted.id, "t1");
+        assert!(db.get_trade("t1").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_nonexistent_returns_none() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        assert!(db.delete_trade("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn list_trades_respects_limit_and_ordering() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        // Insert trades with different timestamps
+        for i in 0..5 {
+            let mut trade = make_trade(&format!("t{i}"), "tok", "buy", "0.50", "1");
+            trade.timestamp = format!("2026-01-01T00:00:0{i}Z");
+            db.insert_trade(&trade).unwrap();
+        }
+
+        let trades = db.list_trades(3).unwrap();
+        assert_eq!(trades.len(), 3);
+        // Should be newest first (DESC)
+        assert_eq!(trades[0].id, "t4");
+        assert_eq!(trades[1].id, "t3");
+        assert_eq!(trades[2].id, "t2");
+    }
+
+    #[test]
+    fn all_trades_returns_everything() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        for i in 0..10 {
+            let trade = make_trade(&format!("t{i}"), "tok", "buy", "0.50", "1");
+            db.insert_trade(&trade).unwrap();
+        }
+        assert_eq!(db.all_trades().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn net_position_size_buys_only() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.insert_trade(&make_trade("t1", "tok_a", "buy", "0.50", "10"))
+            .unwrap();
+        db.insert_trade(&make_trade("t2", "tok_a", "buy", "0.60", "5"))
+            .unwrap();
+
+        let net = db.net_position_size("tok_a").unwrap();
+        assert!((net - 15.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn net_position_size_buys_and_sells() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.insert_trade(&make_trade("t1", "tok_a", "buy", "0.50", "10"))
+            .unwrap();
+        db.insert_trade(&make_trade("t2", "tok_a", "sell", "0.60", "3"))
+            .unwrap();
+
+        let net = db.net_position_size("tok_a").unwrap();
+        assert!((net - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn net_position_size_unknown_token_is_zero() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        let net = db.net_position_size("nonexistent").unwrap();
+        assert!((net).abs() < 1e-9);
+    }
+
+    #[test]
+    fn net_position_size_ignores_other_tokens() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.insert_trade(&make_trade("t1", "tok_a", "buy", "0.50", "10"))
+            .unwrap();
+        db.insert_trade(&make_trade("t2", "tok_b", "buy", "0.70", "20"))
+            .unwrap();
+
+        assert!((db.net_position_size("tok_a").unwrap() - 10.0).abs() < 1e-9);
+        assert!((db.net_position_size("tok_b").unwrap() - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reset_clears_trades_and_sets_balance() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.insert_trade(&make_trade("t1", "tok", "buy", "0.50", "10"))
+            .unwrap();
+        db.update_balance("500.00").unwrap();
+
+        db.reset("2000.00").unwrap();
+
+        assert_eq!(db.all_trades().unwrap().len(), 0);
+        assert_eq!(db.get_balance().unwrap(), "2000.00");
+        assert_eq!(db.get_starting_balance().unwrap(), "2000.00");
+    }
+
+    #[test]
+    fn ensure_schema_is_idempotent() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.insert_trade(&make_trade("t1", "tok", "buy", "0.50", "10"))
+            .unwrap();
+        db.update_balance("500.00").unwrap();
+
+        // Running ensure_schema again should not reset anything
+        db.ensure_schema().unwrap();
+
+        assert_eq!(db.get_balance().unwrap(), "500.00");
+        assert_eq!(db.all_trades().unwrap().len(), 1);
     }
 }

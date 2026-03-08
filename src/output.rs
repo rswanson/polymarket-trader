@@ -8,7 +8,10 @@ pub fn print_output<T: Serialize>(
     data: &T,
 ) {
     if json_mode {
-        println!("{}", serde_json::to_string_pretty(data).unwrap());
+        match serde_json::to_string_pretty(data) {
+            Ok(s) => println!("{s}"),
+            Err(e) => eprintln!("Error serializing output: {e}"),
+        }
     } else {
         let mut table = Table::new();
         table.set_content_arrangement(ContentArrangement::Dynamic);
@@ -23,7 +26,10 @@ pub fn print_output<T: Serialize>(
 pub fn print_error(json_mode: bool, msg: &str) {
     if json_mode {
         let err = serde_json::json!({"error": msg});
-        println!("{}", serde_json::to_string_pretty(&err).unwrap());
+        match serde_json::to_string_pretty(&err) {
+            Ok(s) => println!("{s}"),
+            Err(e) => eprintln!("Error: {msg} (serialization failed: {e})"),
+        }
     } else {
         eprintln!("Error: {msg}");
     }

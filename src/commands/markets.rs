@@ -3,6 +3,7 @@ use polymarket_client_sdk::auth::state::State;
 use polymarket_client_sdk::clob::Client;
 use serde::Serialize;
 
+use super::CLOB_END_CURSOR;
 use crate::output::print_output;
 
 #[derive(Serialize)]
@@ -59,7 +60,8 @@ pub async fn list_markets<S: State>(client: &Client<S>, limit: usize, json: bool
             }
         }
 
-        if all_markets.len() >= limit || page.next_cursor == "LTE=" || page.data.is_empty() {
+        if all_markets.len() >= limit || page.next_cursor == CLOB_END_CURSOR || page.data.is_empty()
+        {
             break;
         }
 

@@ -5,6 +5,7 @@ use polymarket_client_sdk::clob::Client;
 use polymarket_client_sdk::clob::types::request::{BalanceAllowanceRequest, TradesRequest};
 use serde::Serialize;
 
+use super::CLOB_END_CURSOR;
 use crate::output::print_output;
 
 #[derive(Serialize)]
@@ -77,7 +78,7 @@ pub async fn trades(
         for t in &page.data {
             all_trades.push(TradeRow {
                 id: t.id.clone(),
-                market: format!("{}", t.market),
+                market: t.market.to_string(),
                 side: t.side.to_string(),
                 price: t.price.to_string(),
                 size: t.size.to_string(),
@@ -89,7 +90,8 @@ pub async fn trades(
             }
         }
 
-        if all_trades.len() >= limit || page.next_cursor == "LTE=" || page.data.is_empty() {
+        if all_trades.len() >= limit || page.next_cursor == CLOB_END_CURSOR || page.data.is_empty()
+        {
             break;
         }
 
