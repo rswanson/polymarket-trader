@@ -3,13 +3,16 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use futures::future::try_join_all;
 use polymarket_client_sdk::auth::state::State;
 use polymarket_client_sdk::clob::Client;
+use polymarket_client_sdk::clob::types::Side;
 use polymarket_client_sdk::clob::types::request::MidpointRequest;
-use polymarket_client_sdk::types::{Decimal, U256};
+use polymarket_client_sdk::types::Decimal;
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::{parse_side, parse_token_id};
 use crate::dry_run::db::{DryRunDb, Trade};
 use crate::dry_run::portfolio;
 use crate::output::print_output;
@@ -22,19 +25,8 @@ fn truncate_token_id(token_id: &str) -> String {
     }
 }
 
-fn parse_side(s: &str) -> Result<String> {
-    match s.to_lowercase().as_str() {
-        "buy" => Ok("buy".to_string()),
-        "sell" => Ok("sell".to_string()),
-        other => Err(anyhow::anyhow!(
-            "Invalid side '{other}', expected 'buy' or 'sell'"
-        )),
-    }
-}
-
 async fn fetch_midpoint<S: State>(client: &Client<S>, token_id_str: &str) -> Result<Decimal> {
-    let token_id =
-        U256::from_str(token_id_str).map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
+    let token_id = parse_token_id(token_id_str)?;
     let request = MidpointRequest::builder().token_id(token_id).build();
     let response = client
         .midpoint(&request)
@@ -54,40 +46,35 @@ struct TradeResult {
     balance: String,
 }
 
-pub async fn place_limit<S: State>(
-    client: &Client<S>,
+/// Shared logic for recording a dry-run trade (used by both place_limit and place_market).
+fn record_trade(
+    db: &DryRunDb,
     token_id: &str,
-    side_str: &str,
-    _price_str: &str,
-    size_str: &str,
+    side: Side,
+    cost: Decimal,
+    size: Decimal,
+    midpoint: Decimal,
     json: bool,
 ) -> Result<()> {
-    let side = parse_side(side_str)?;
-    let size = Decimal::from_str(size_str).map_err(|e| anyhow::anyhow!("Invalid size: {e}"))?;
-    let midpoint = fetch_midpoint(client, token_id).await?;
-    let cost = (midpoint * size).round_dp(2);
-
-    let db = DryRunDb::open()?;
     let mut balance =
         Decimal::from_str(&db.get_balance()?).context("invalid balance in database")?;
+    let side_str = match side {
+        Side::Buy => "buy",
+        _ => "sell",
+    };
 
-    if side == "buy" {
+    if side == Side::Buy {
         anyhow::ensure!(
             balance >= cost,
             "Insufficient balance: have {balance}, need {cost}"
         );
         balance -= cost;
     } else {
-        let all_trades = db.all_trades()?;
-        let positions = portfolio::compute_positions(&all_trades)?;
-        let held = positions
-            .iter()
-            .find(|p| p.token_id == token_id && p.side == "long")
-            .map(|p| Decimal::from_str(&p.net_size).unwrap_or_default())
-            .unwrap_or_default();
+        let held = db.net_position_size(token_id)?;
+        let held_dec = Decimal::from_f64_retain(held).unwrap_or_default();
         anyhow::ensure!(
-            held >= size,
-            "Insufficient position: hold {held} shares, trying to sell {size}"
+            held_dec >= size,
+            "Insufficient position: hold {held_dec} shares, trying to sell {size}"
         );
         balance += cost;
     }
@@ -97,7 +84,7 @@ pub async fn place_limit<S: State>(
     let trade = Trade {
         id: Uuid::new_v4().to_string(),
         token_id: token_id.to_string(),
-        side,
+        side: side_str.to_string(),
         price: midpoint.round_dp(6).to_string(),
         size: size.to_string(),
         cost: cost.to_string(),
@@ -130,6 +117,23 @@ pub async fn place_limit<S: State>(
     print_output(json, headers, rows, &result);
 
     Ok(())
+}
+
+pub async fn place_limit<S: State>(
+    client: &Client<S>,
+    token_id: &str,
+    side_str: &str,
+    _price_str: &str,
+    size_str: &str,
+    json: bool,
+) -> Result<()> {
+    let side = parse_side(side_str)?;
+    let size = Decimal::from_str(size_str).map_err(|e| anyhow::anyhow!("Invalid size: {e}"))?;
+    let midpoint = fetch_midpoint(client, token_id).await?;
+    let cost = (midpoint * size).round_dp(2);
+
+    let db = DryRunDb::open()?;
+    record_trade(&db, token_id, side, cost, size, midpoint, json)
 }
 
 pub async fn place_market<S: State>(
@@ -151,68 +155,7 @@ pub async fn place_market<S: State>(
     let cost = amount.round_dp(2);
 
     let db = DryRunDb::open()?;
-    let mut balance =
-        Decimal::from_str(&db.get_balance()?).context("invalid balance in database")?;
-
-    if side == "buy" {
-        anyhow::ensure!(
-            balance >= cost,
-            "Insufficient balance: have {balance}, need {cost}"
-        );
-        balance -= cost;
-    } else {
-        let all_trades = db.all_trades()?;
-        let positions = portfolio::compute_positions(&all_trades)?;
-        let held = positions
-            .iter()
-            .find(|p| p.token_id == token_id && p.side == "long")
-            .map(|p| Decimal::from_str(&p.net_size).unwrap_or_default())
-            .unwrap_or_default();
-        anyhow::ensure!(
-            held >= size,
-            "Insufficient position: hold {held} shares, trying to sell {size}"
-        );
-        balance += cost;
-    }
-
-    let balance = balance.round_dp(2);
-
-    let trade = Trade {
-        id: Uuid::new_v4().to_string(),
-        token_id: token_id.to_string(),
-        side,
-        price: midpoint.round_dp(6).to_string(),
-        size: size.to_string(),
-        cost: cost.to_string(),
-        timestamp: Utc::now().to_rfc3339(),
-    };
-
-    db.insert_trade(&trade)?;
-    db.update_balance(&balance.to_string())?;
-
-    let result = TradeResult {
-        id: trade.id.clone(),
-        token_id: trade.token_id.clone(),
-        side: trade.side.clone(),
-        price: trade.price.clone(),
-        size: trade.size.clone(),
-        cost: trade.cost.clone(),
-        balance: balance.to_string(),
-    };
-
-    let headers = &["ID", "Token", "Side", "Price", "Size", "Cost", "Balance"];
-    let rows = vec![vec![
-        result.id.clone(),
-        truncate_token_id(&result.token_id),
-        result.side.clone(),
-        result.price.clone(),
-        result.size.clone(),
-        result.cost.clone(),
-        result.balance.clone(),
-    ]];
-    print_output(json, headers, rows, &result);
-
-    Ok(())
+    record_trade(&db, token_id, side, cost, size, midpoint, json)
 }
 
 #[derive(Serialize)]
@@ -309,11 +252,15 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
     let all_trades = db.all_trades()?;
     let positions = portfolio::compute_positions(&all_trades)?;
 
-    let mut current_prices: HashMap<String, Decimal> = HashMap::new();
-    for pos in &positions {
-        let mid = fetch_midpoint(client, &pos.token_id).await?;
-        current_prices.insert(pos.token_id.clone(), mid);
-    }
+    // Fetch all midpoint prices concurrently
+    let futs: Vec<_> = positions
+        .iter()
+        .map(|pos| async move {
+            let mid = fetch_midpoint(client, &pos.token_id).await?;
+            Ok::<_, anyhow::Error>((pos.token_id.clone(), mid))
+        })
+        .collect();
+    let current_prices: HashMap<String, Decimal> = try_join_all(futs).await?.into_iter().collect();
 
     let starting_balance = db.get_starting_balance()?;
     let current_balance = db.get_balance()?;
@@ -384,4 +331,200 @@ pub fn reset(balance: &str, json: bool) -> Result<()> {
     print_output(json, headers, rows, &result);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dry_run::db::DryRunDb;
+
+    fn dec(s: &str) -> Decimal {
+        Decimal::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn record_trade_buy_deducts_balance() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        // Default balance is 1000.00
+        record_trade(
+            &db,
+            "tok_a",
+            Side::Buy,
+            dec("100.00"),
+            dec("200"),
+            dec("0.50"),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(db.get_balance().unwrap(), "900.00");
+        let trades = db.all_trades().unwrap();
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].side, "buy");
+        assert_eq!(trades[0].token_id, "tok_a");
+    }
+
+    #[test]
+    fn record_trade_buy_insufficient_balance() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        let result = record_trade(
+            &db,
+            "tok_a",
+            Side::Buy,
+            dec("2000.00"),
+            dec("100"),
+            dec("20.0"),
+            false,
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Insufficient balance"));
+        // Balance should be unchanged
+        assert_eq!(db.get_balance().unwrap(), "1000.00");
+        // No trade should be recorded
+        assert_eq!(db.all_trades().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn record_trade_sell_credits_balance() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        // First buy some shares
+        record_trade(
+            &db,
+            "tok_a",
+            Side::Buy,
+            dec("50.00"),
+            dec("100"),
+            dec("0.50"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(db.get_balance().unwrap(), "950.00");
+
+        // Now sell some
+        record_trade(
+            &db,
+            "tok_a",
+            Side::Sell,
+            dec("30.00"),
+            dec("50"),
+            dec("0.60"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(db.get_balance().unwrap(), "980.00");
+    }
+
+    #[test]
+    fn record_trade_sell_insufficient_position() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        // No position at all
+        let result = record_trade(
+            &db,
+            "tok_a",
+            Side::Sell,
+            dec("50.00"),
+            dec("10"),
+            dec("5.0"),
+            false,
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Insufficient position"));
+    }
+
+    #[test]
+    fn record_trade_sell_more_than_held() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        // Buy 5 shares
+        record_trade(
+            &db,
+            "tok_a",
+            Side::Buy,
+            dec("25.00"),
+            dec("5"),
+            dec("5.0"),
+            false,
+        )
+        .unwrap();
+
+        // Try to sell 10
+        let result = record_trade(
+            &db,
+            "tok_a",
+            Side::Sell,
+            dec("50.00"),
+            dec("10"),
+            dec("5.0"),
+            false,
+        );
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Insufficient position")
+        );
+    }
+
+    #[test]
+    fn record_trade_buy_exact_balance() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        // Spend exactly 1000.00
+        record_trade(
+            &db,
+            "tok_a",
+            Side::Buy,
+            dec("1000.00"),
+            dec("2000"),
+            dec("0.50"),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(db.get_balance().unwrap(), "0.00");
+    }
+
+    #[test]
+    fn record_trade_multiple_tokens() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        record_trade(
+            &db,
+            "tok_a",
+            Side::Buy,
+            dec("100.00"),
+            dec("10"),
+            dec("10.0"),
+            false,
+        )
+        .unwrap();
+        record_trade(
+            &db,
+            "tok_b",
+            Side::Buy,
+            dec("200.00"),
+            dec("20"),
+            dec("10.0"),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(db.get_balance().unwrap(), "700.00");
+        assert_eq!(db.all_trades().unwrap().len(), 2);
+
+        // Selling tok_a should not be affected by tok_b position
+        let result = record_trade(
+            &db,
+            "tok_a",
+            Side::Sell,
+            dec("50.00"),
+            dec("15"),
+            dec("10.0"),
+            false,
+        );
+        assert!(result.is_err()); // only 10 held for tok_a
+    }
 }

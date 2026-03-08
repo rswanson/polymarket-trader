@@ -141,3 +141,209 @@ pub fn compute_pnl(
         total_pnl: total_pnl.to_string(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_trade(token_id: &str, side: &str, price: &str, size: &str) -> Trade {
+        let p = Decimal::from_str(price).unwrap();
+        let s = Decimal::from_str(size).unwrap();
+        Trade {
+            id: format!("{token_id}-{side}"),
+            token_id: token_id.to_string(),
+            side: side.to_string(),
+            price: price.to_string(),
+            size: size.to_string(),
+            cost: (p * s).to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    // ── compute_positions ──
+
+    #[test]
+    fn positions_empty_trades() {
+        let positions = compute_positions(&[]).unwrap();
+        assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn positions_single_buy() {
+        let trades = vec![make_trade("tok_a", "buy", "0.50", "10")];
+        let positions = compute_positions(&trades).unwrap();
+
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].token_id, "tok_a");
+        assert_eq!(positions[0].side, "long");
+        assert_eq!(positions[0].net_size, "10");
+        assert_eq!(positions[0].avg_price, "0.50");
+    }
+
+    #[test]
+    fn positions_multiple_buys_same_token() {
+        let trades = vec![
+            make_trade("tok_a", "buy", "0.40", "10"),
+            make_trade("tok_a", "buy", "0.60", "10"),
+        ];
+        let positions = compute_positions(&trades).unwrap();
+
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].net_size, "20");
+        // avg_price = total_cost / net_size = (4 + 6) / 20 = 0.50
+        assert_eq!(positions[0].avg_price, "0.50");
+    }
+
+    #[test]
+    fn positions_buy_and_partial_sell() {
+        let trades = vec![
+            make_trade("tok_a", "buy", "0.50", "10"),
+            make_trade("tok_a", "sell", "0.60", "4"),
+        ];
+        let positions = compute_positions(&trades).unwrap();
+
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].side, "long");
+        assert_eq!(positions[0].net_size, "6");
+    }
+
+    #[test]
+    fn positions_full_close_excluded() {
+        let trades = vec![
+            make_trade("tok_a", "buy", "0.50", "10"),
+            make_trade("tok_a", "sell", "0.60", "10"),
+        ];
+        let positions = compute_positions(&trades).unwrap();
+        // Fully closed position should not appear
+        assert!(positions.is_empty());
+    }
+
+    #[test]
+    fn positions_multiple_tokens_sorted() {
+        let trades = vec![
+            make_trade("tok_b", "buy", "0.30", "5"),
+            make_trade("tok_a", "buy", "0.50", "10"),
+        ];
+        let positions = compute_positions(&trades).unwrap();
+
+        assert_eq!(positions.len(), 2);
+        // Should be sorted by token_id
+        assert_eq!(positions[0].token_id, "tok_a");
+        assert_eq!(positions[1].token_id, "tok_b");
+    }
+
+    #[test]
+    fn positions_net_short() {
+        let trades = vec![
+            make_trade("tok_a", "buy", "0.50", "5"),
+            make_trade("tok_a", "sell", "0.60", "10"),
+        ];
+        let positions = compute_positions(&trades).unwrap();
+
+        assert_eq!(positions.len(), 1);
+        assert_eq!(positions[0].side, "short");
+        assert_eq!(positions[0].net_size, "5");
+    }
+
+    // ── compute_pnl ──
+
+    #[test]
+    fn pnl_no_positions() {
+        let prices = HashMap::new();
+        let report = compute_pnl(&[], &prices, "1000.00", "1000.00").unwrap();
+
+        assert_eq!(report.total_unrealized_pnl, "0");
+        assert_eq!(report.total_pnl, "0");
+        assert!(report.positions.is_empty());
+    }
+
+    #[test]
+    fn pnl_long_position_price_up() {
+        let positions = vec![Position {
+            token_id: "tok_a".to_string(),
+            net_size: "10".to_string(),
+            side: "long".to_string(),
+            avg_price: "0.50".to_string(),
+            total_cost: "5.00".to_string(),
+        }];
+        let mut prices = HashMap::new();
+        prices.insert("tok_a".to_string(), Decimal::from_str("0.70").unwrap());
+
+        // Spent 5.00 buying, so balance is 995.00
+        let report = compute_pnl(&positions, &prices, "1000.00", "995.00").unwrap();
+
+        // Unrealized: (0.70 - 0.50) * 10 = 2.00
+        assert_eq!(report.total_unrealized_pnl, "2.00");
+        // Total: (995 - 1000) + 2.00 = -3.00
+        assert_eq!(report.total_pnl, "-3.00");
+    }
+
+    #[test]
+    fn pnl_long_position_price_down() {
+        let positions = vec![Position {
+            token_id: "tok_a".to_string(),
+            net_size: "10".to_string(),
+            side: "long".to_string(),
+            avg_price: "0.50".to_string(),
+            total_cost: "5.00".to_string(),
+        }];
+        let mut prices = HashMap::new();
+        prices.insert("tok_a".to_string(), Decimal::from_str("0.30").unwrap());
+
+        let report = compute_pnl(&positions, &prices, "1000.00", "995.00").unwrap();
+
+        // Unrealized: (0.30 - 0.50) * 10 = -2.00
+        assert_eq!(report.total_unrealized_pnl, "-2.00");
+    }
+
+    #[test]
+    fn pnl_missing_price_uses_avg() {
+        let positions = vec![Position {
+            token_id: "tok_a".to_string(),
+            net_size: "10".to_string(),
+            side: "long".to_string(),
+            avg_price: "0.50".to_string(),
+            total_cost: "5.00".to_string(),
+        }];
+        // No price provided for tok_a
+        let prices = HashMap::new();
+
+        let report = compute_pnl(&positions, &prices, "1000.00", "995.00").unwrap();
+
+        // Falls back to avg_price, so unrealized = 0
+        assert_eq!(report.total_unrealized_pnl, "0");
+        assert_eq!(report.positions[0].current_price, "0.50");
+    }
+
+    #[test]
+    fn pnl_mixed_portfolio() {
+        let positions = vec![
+            Position {
+                token_id: "tok_a".to_string(),
+                net_size: "10".to_string(),
+                side: "long".to_string(),
+                avg_price: "0.40".to_string(),
+                total_cost: "4.00".to_string(),
+            },
+            Position {
+                token_id: "tok_b".to_string(),
+                net_size: "5".to_string(),
+                side: "long".to_string(),
+                avg_price: "0.80".to_string(),
+                total_cost: "4.00".to_string(),
+            },
+        ];
+        let mut prices = HashMap::new();
+        prices.insert("tok_a".to_string(), Decimal::from_str("0.50").unwrap());
+        prices.insert("tok_b".to_string(), Decimal::from_str("0.60").unwrap());
+
+        let report = compute_pnl(&positions, &prices, "1000.00", "992.00").unwrap();
+
+        // tok_a: (0.50 - 0.40) * 10 = 1.00
+        // tok_b: (0.60 - 0.80) * 5 = -1.00
+        // Total unrealized: 0.00
+        assert_eq!(report.total_unrealized_pnl, "0.00");
+        // Total: (992 - 1000) + 0 = -8.00
+        assert_eq!(report.total_pnl, "-8.00");
+    }
+}
