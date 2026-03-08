@@ -1,3 +1,9 @@
+mod cli;
+
+use clap::Parser;
+use cli::Cli;
+
 fn main() {
-    println!("polymarket-trader");
+    let _cli = Cli::parse();
+    println!("parsed CLI args successfully");
 }
