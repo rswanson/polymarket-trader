@@ -221,6 +221,17 @@ pub enum DryRunCommand {
     },
     /// Show profit and loss report
     Pnl,
+    /// Close a position (sell at current market price)
+    Close {
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name
+        #[arg(long)]
+        outcome: Option<String>,
+        /// Number of shares to sell (default: entire position)
+        #[arg(long)]
+        size: Option<String>,
+    },
     /// Reset dry-run state
     Reset {
         #[arg(long, default_value = "1000.00")]

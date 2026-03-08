@@ -138,6 +138,51 @@ fn record_trade(
     Ok(())
 }
 
+pub async fn close<S: State>(
+    client: &Client<S>,
+    resolved: &ResolvedMarket,
+    size: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let db = DryRunDb::open()?;
+    let held = db.net_position_size(&resolved.token_id_str)?;
+    let held_dec = Decimal::from_f64_retain(held).unwrap_or_default();
+
+    anyhow::ensure!(
+        held_dec > Decimal::ZERO,
+        "No open position for this market"
+    );
+
+    let sell_size = match size {
+        Some(s) => {
+            let requested =
+                Decimal::from_str(s).map_err(|e| anyhow::anyhow!("Invalid size: {e}"))?;
+            anyhow::ensure!(
+                requested <= held_dec,
+                "Requested size {requested} exceeds held position {held_dec}"
+            );
+            requested
+        }
+        None => held_dec,
+    };
+
+    let midpoint = fetch_midpoint(client, &resolved.token_id_str).await?;
+    let cost = (midpoint * sell_size).round_dp(2);
+
+    record_trade(
+        &db,
+        &resolved.token_id_str,
+        Side::Sell,
+        cost,
+        sell_size,
+        midpoint,
+        json,
+        resolved.slug.as_deref(),
+        resolved.question.as_deref(),
+        resolved.outcome.as_deref(),
+    )
+}
+
 pub async fn place_limit<S: State>(
     client: &Client<S>,
     resolved: &ResolvedMarket,
@@ -647,5 +692,80 @@ mod tests {
             None,
         );
         assert!(result.is_err()); // only 10 held for tok_a
+    }
+
+    #[test]
+    fn close_full_position_zeros_it() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        // Buy 10 shares
+        record_trade(
+            &db,
+            "tok_a",
+            Side::Buy,
+            dec("50.00"),
+            dec("10"),
+            dec("5.0"),
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(db.get_balance().unwrap(), "950.00");
+
+        // Sell all 10 shares at 6.0 midpoint
+        record_trade(
+            &db,
+            "tok_a",
+            Side::Sell,
+            dec("60.00"),
+            dec("10"),
+            dec("6.0"),
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(db.get_balance().unwrap(), "1010.00");
+
+        // Position should be zero
+        let net = db.net_position_size("tok_a").unwrap();
+        assert!((net).abs() < 1e-9);
+    }
+
+    #[test]
+    fn close_partial_position() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        record_trade(
+            &db,
+            "tok_a",
+            Side::Buy,
+            dec("50.00"),
+            dec("10"),
+            dec("5.0"),
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Sell 4 shares
+        record_trade(
+            &db,
+            "tok_a",
+            Side::Sell,
+            dec("24.00"),
+            dec("4"),
+            dec("6.0"),
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let net = db.net_position_size("tok_a").unwrap();
+        assert!((net - 6.0).abs() < 1e-9);
     }
 }
