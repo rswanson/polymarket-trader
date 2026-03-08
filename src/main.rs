@@ -65,7 +65,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         *limit,
                         None,
                         false,
-                        "volume_24hr",
+                        "volume",
                         None,
                         json,
                     )
