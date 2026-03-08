@@ -349,10 +349,11 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
     if json {
         print_output(true, &[], vec![], &report);
     } else {
-        println!("Starting balance: {}", report.starting_balance);
-        println!("Current balance:  {}", report.current_balance);
-        println!("Unrealized P&L:   {}", report.total_unrealized_pnl);
-        println!("Total P&L:        {}", report.total_pnl);
+        println!("Starting Balance: ${}", report.starting_balance);
+        println!("Cash:             ${}", report.current_balance);
+        println!("Position Value:   ${}", report.position_value);
+        println!("Total Value:      ${}", report.total_value);
+        println!("Net P&L:          ${}", report.total_pnl);
         println!();
 
         let headers = &[
@@ -362,6 +363,7 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
             "Size",
             "Avg Price",
             "Current Price",
+            "Value",
             "Unrealized P&L",
         ];
         let rows: Vec<Vec<String>> = report
@@ -384,6 +386,7 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
                     p.size.clone(),
                     p.avg_price.clone(),
                     p.current_price.clone(),
+                    p.value.clone(),
                     p.unrealized_pnl.clone(),
                 ]
             })
