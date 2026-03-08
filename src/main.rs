@@ -232,6 +232,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 DryRunCommand::Pnl => {
                     commands::dry_run::pnl(&clob_client, json).await?;
                 }
+                DryRunCommand::Portfolio => {
+                    commands::dry_run::portfolio(&clob_client, json).await?;
+                }
                 DryRunCommand::Reset { balance } => {
                     commands::dry_run::reset(balance, json)?;
                 }

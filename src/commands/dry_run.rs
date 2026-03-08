@@ -148,10 +148,7 @@ pub async fn close<S: State>(
     let held = db.net_position_size(&resolved.token_id_str)?;
     let held_dec = Decimal::from_f64_retain(held).unwrap_or_default();
 
-    anyhow::ensure!(
-        held_dec > Decimal::ZERO,
-        "No open position for this market"
-    );
+    anyhow::ensure!(held_dec > Decimal::ZERO, "No open position for this market");
 
     let sell_size = match size {
         Some(s) => {
@@ -446,6 +443,86 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
 struct ResetResult {
     balance: String,
     message: String,
+}
+
+pub async fn portfolio<S: State>(client: &Client<S>, json: bool) -> Result<()> {
+    let db = DryRunDb::open()?;
+    let all_trades = db.all_trades()?;
+    let positions = portfolio::compute_positions(&all_trades)?;
+    let metadata = db.all_metadata()?;
+
+    // Fetch current prices concurrently
+    let futs: Vec<_> = positions
+        .iter()
+        .map(|pos| async move {
+            let mid = fetch_midpoint(client, &pos.token_id).await?;
+            Ok::<_, anyhow::Error>((pos.token_id.clone(), mid))
+        })
+        .collect();
+    let current_prices: HashMap<String, Decimal> = try_join_all(futs).await?.into_iter().collect();
+
+    let starting_balance = db.get_starting_balance()?;
+    let current_balance = db.get_balance()?;
+    let report = portfolio::compute_pnl(
+        &positions,
+        &current_prices,
+        &starting_balance,
+        &current_balance,
+    )?;
+
+    if json {
+        print_output(true, &[], vec![], &report);
+    } else {
+        println!("Balance: ${}", report.current_balance);
+        println!();
+
+        if !report.positions.is_empty() {
+            let headers = &[
+                "Market",
+                "Outcome",
+                "Side",
+                "Size",
+                "Avg Price",
+                "Current",
+                "Value",
+                "P&L",
+            ];
+            let rows: Vec<Vec<String>> = report
+                .positions
+                .iter()
+                .map(|p| {
+                    let meta = metadata.get(&p.token_id);
+                    let market_name = meta
+                        .and_then(|m| m.question.as_deref())
+                        .map(|q| truncate_str(q, 35))
+                        .unwrap_or_else(|| truncate_token_id(&p.token_id));
+                    let outcome_name = meta
+                        .and_then(|m| m.outcome.as_deref())
+                        .unwrap_or("-")
+                        .to_string();
+                    vec![
+                        market_name,
+                        outcome_name,
+                        p.side.clone(),
+                        p.size.clone(),
+                        p.avg_price.clone(),
+                        p.current_price.clone(),
+                        format!("${}", p.value),
+                        format!("${}", p.unrealized_pnl),
+                    ]
+                })
+                .collect();
+            print_output(false, headers, rows, &report.positions);
+            println!();
+        }
+
+        println!("Cash:            ${}", report.current_balance);
+        println!("Position Value:  ${}", report.position_value);
+        println!("Total Value:     ${}", report.total_value);
+        println!("Net P&L:         ${}", report.total_pnl);
+    }
+
+    Ok(())
 }
 
 pub fn reset(balance: &str, json: bool) -> Result<()> {

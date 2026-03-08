@@ -232,6 +232,8 @@ pub enum DryRunCommand {
         #[arg(long)]
         size: Option<String>,
     },
+    /// Show full portfolio: positions with names, prices, P&L, and totals
+    Portfolio,
     /// Reset dry-run state
     Reset {
         #[arg(long, default_value = "1000.00")]
