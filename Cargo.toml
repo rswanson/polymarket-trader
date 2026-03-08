@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-polymarket-client-sdk = { version = "0.4", features = ["clob"] }
+polymarket-client-sdk = { version = "0.4", features = ["clob", "gamma"] }
 alloy = { version = "1.6", features = ["signer-aws"] }
 aws-config = "1.8"
 aws-sdk-kms = "1.99"

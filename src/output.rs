@@ -1,6 +1,19 @@
 use comfy_table::{ContentArrangement, Table};
 use serde::Serialize;
 
+pub fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let end = s
+            .char_indices()
+            .nth(max.saturating_sub(3))
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        format!("{}...", &s[..end])
+    }
+}
+
 pub fn print_output<T: Serialize>(
     json_mode: bool,
     headers: &[&str],

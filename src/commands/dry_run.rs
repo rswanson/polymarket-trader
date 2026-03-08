@@ -13,16 +13,13 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use super::{parse_side, parse_token_id};
-use crate::dry_run::db::{DryRunDb, Trade};
+use crate::dry_run::db::{DryRunDb, MarketMetadata, Trade};
 use crate::dry_run::portfolio;
 use crate::output::print_output;
+use crate::resolve::ResolvedMarket;
 
 fn truncate_token_id(token_id: &str) -> String {
-    if token_id.len() > 12 {
-        token_id.chars().take(12).collect::<String>() + "..."
-    } else {
-        token_id.to_string()
-    }
+    crate::output::truncate(token_id, 12)
 }
 
 async fn fetch_midpoint<S: State>(client: &Client<S>, token_id_str: &str) -> Result<Decimal> {
@@ -33,6 +30,52 @@ async fn fetch_midpoint<S: State>(client: &Client<S>, token_id_str: &str) -> Res
         .await
         .context("Failed to fetch midpoint")?;
     Ok(response.mid)
+}
+
+/// Look up market and outcome display names from metadata.
+fn display_names(metadata: &HashMap<String, MarketMetadata>, token_id: &str) -> (String, String) {
+    let meta = metadata.get(token_id);
+    let market_name = meta
+        .and_then(|m| m.question.as_deref())
+        .map(|q| crate::output::truncate(q, 40))
+        .unwrap_or_else(|| truncate_token_id(token_id));
+    let outcome_name = meta
+        .and_then(|m| m.outcome.as_deref())
+        .unwrap_or("-")
+        .to_string();
+    (market_name, outcome_name)
+}
+
+struct PnlData {
+    report: portfolio::PnlReport,
+    metadata: HashMap<String, MarketMetadata>,
+}
+
+async fn build_pnl_data<S: State>(client: &Client<S>) -> Result<PnlData> {
+    let db = DryRunDb::open()?;
+    let all_trades = db.all_trades()?;
+    let positions = portfolio::compute_positions(&all_trades)?;
+    let metadata = db.all_metadata()?;
+
+    let futs: Vec<_> = positions
+        .iter()
+        .map(|pos| async move {
+            let mid = fetch_midpoint(client, &pos.token_id).await?;
+            Ok::<_, anyhow::Error>((pos.token_id.clone(), mid))
+        })
+        .collect();
+    let current_prices: HashMap<String, Decimal> = try_join_all(futs).await?.into_iter().collect();
+
+    let starting_balance = db.get_starting_balance()?;
+    let current_balance = db.get_balance()?;
+    let report = portfolio::compute_pnl(
+        &positions,
+        &current_prices,
+        &starting_balance,
+        &current_balance,
+    )?;
+
+    Ok(PnlData { report, metadata })
 }
 
 #[derive(Serialize)]
@@ -49,13 +92,14 @@ struct TradeResult {
 /// Shared logic for recording a dry-run trade (used by both place_limit and place_market).
 fn record_trade(
     db: &DryRunDb,
-    token_id: &str,
+    resolved: &ResolvedMarket,
     side: Side,
     cost: Decimal,
     size: Decimal,
     midpoint: Decimal,
     json: bool,
 ) -> Result<()> {
+    let token_id = &resolved.token_id_str;
     let mut balance =
         Decimal::from_str(&db.get_balance()?).context("invalid balance in database")?;
     let side_str = match side {
@@ -70,8 +114,7 @@ fn record_trade(
         );
         balance -= cost;
     } else {
-        let held = db.net_position_size(token_id)?;
-        let held_dec = Decimal::from_f64_retain(held).unwrap_or_default();
+        let held_dec = db.net_position_size(token_id)?;
         anyhow::ensure!(
             held_dec >= size,
             "Insufficient position: hold {held_dec} shares, trying to sell {size}"
@@ -92,6 +135,12 @@ fn record_trade(
     };
 
     db.insert_trade(&trade)?;
+    db.upsert_metadata(
+        token_id,
+        resolved.slug.as_deref(),
+        resolved.question.as_deref(),
+        resolved.outcome.as_deref(),
+    )?;
     db.update_balance(&balance.to_string())?;
 
     let result = TradeResult {
@@ -119,9 +168,39 @@ fn record_trade(
     Ok(())
 }
 
+pub async fn close<S: State>(
+    client: &Client<S>,
+    resolved: &ResolvedMarket,
+    size: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let db = DryRunDb::open()?;
+    let held_dec = db.net_position_size(&resolved.token_id_str)?;
+
+    anyhow::ensure!(held_dec > Decimal::ZERO, "No open position for this market");
+
+    let sell_size = match size {
+        Some(s) => {
+            let requested =
+                Decimal::from_str(s).map_err(|e| anyhow::anyhow!("Invalid size: {e}"))?;
+            anyhow::ensure!(
+                requested <= held_dec,
+                "Requested size {requested} exceeds held position {held_dec}"
+            );
+            requested
+        }
+        None => held_dec,
+    };
+
+    let midpoint = fetch_midpoint(client, &resolved.token_id_str).await?;
+    let cost = (midpoint * sell_size).round_dp(2);
+
+    record_trade(&db, resolved, Side::Sell, cost, sell_size, midpoint, json)
+}
+
 pub async fn place_limit<S: State>(
     client: &Client<S>,
-    token_id: &str,
+    resolved: &ResolvedMarket,
     side_str: &str,
     _price_str: &str,
     size_str: &str,
@@ -129,16 +208,16 @@ pub async fn place_limit<S: State>(
 ) -> Result<()> {
     let side = parse_side(side_str)?;
     let size = Decimal::from_str(size_str).map_err(|e| anyhow::anyhow!("Invalid size: {e}"))?;
-    let midpoint = fetch_midpoint(client, token_id).await?;
+    let midpoint = fetch_midpoint(client, &resolved.token_id_str).await?;
     let cost = (midpoint * size).round_dp(2);
 
     let db = DryRunDb::open()?;
-    record_trade(&db, token_id, side, cost, size, midpoint, json)
+    record_trade(&db, resolved, side, cost, size, midpoint, json)
 }
 
 pub async fn place_market<S: State>(
     client: &Client<S>,
-    token_id: &str,
+    resolved: &ResolvedMarket,
     side_str: &str,
     amount_str: &str,
     json: bool,
@@ -146,16 +225,17 @@ pub async fn place_market<S: State>(
     let side = parse_side(side_str)?;
     let amount =
         Decimal::from_str(amount_str).map_err(|e| anyhow::anyhow!("Invalid amount: {e}"))?;
-    let midpoint = fetch_midpoint(client, token_id).await?;
+    let midpoint = fetch_midpoint(client, &resolved.token_id_str).await?;
     anyhow::ensure!(
         !midpoint.is_zero(),
-        "Midpoint is zero for token {token_id}, cannot calculate size"
+        "Midpoint is zero for token {}, cannot calculate size",
+        resolved.token_id_str
     );
     let size = amount / midpoint;
     let cost = amount.round_dp(2);
 
     let db = DryRunDb::open()?;
-    record_trade(&db, token_id, side, cost, size, midpoint, json)
+    record_trade(&db, resolved, side, cost, size, midpoint, json)
 }
 
 #[derive(Serialize)]
@@ -204,13 +284,23 @@ pub fn positions(json: bool) -> Result<()> {
     let db = DryRunDb::open()?;
     let trades = db.all_trades()?;
     let positions = portfolio::compute_positions(&trades)?;
+    let metadata = db.all_metadata()?;
 
-    let headers = &["Token ID", "Side", "Size", "Avg Price", "Total Cost"];
+    let headers = &[
+        "Market",
+        "Outcome",
+        "Side",
+        "Size",
+        "Avg Price",
+        "Total Cost",
+    ];
     let rows: Vec<Vec<String>> = positions
         .iter()
         .map(|p| {
+            let (market_name, outcome_name) = display_names(&metadata, &p.token_id);
             vec![
-                truncate_token_id(&p.token_id),
+                market_name,
+                outcome_name,
                 p.side.clone(),
                 p.net_size.clone(),
                 p.avg_price.clone(),
@@ -226,14 +316,19 @@ pub fn positions(json: bool) -> Result<()> {
 pub fn trades(limit: usize, json: bool) -> Result<()> {
     let db = DryRunDb::open()?;
     let trades = db.list_trades(limit)?;
+    let metadata = db.all_metadata()?;
 
-    let headers = &["ID", "Token", "Side", "Price", "Size", "Cost", "Time"];
+    let headers = &[
+        "ID", "Market", "Outcome", "Side", "Price", "Size", "Cost", "Time",
+    ];
     let rows: Vec<Vec<String>> = trades
         .iter()
         .map(|t| {
+            let (market_name, outcome_name) = display_names(&metadata, &t.token_id);
             vec![
                 t.id.clone(),
-                truncate_token_id(&t.token_id),
+                market_name,
+                outcome_name,
                 t.side.clone(),
                 t.price.clone(),
                 t.size.clone(),
@@ -248,62 +343,47 @@ pub fn trades(limit: usize, json: bool) -> Result<()> {
 }
 
 pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
-    let db = DryRunDb::open()?;
-    let all_trades = db.all_trades()?;
-    let positions = portfolio::compute_positions(&all_trades)?;
-
-    // Fetch all midpoint prices concurrently
-    let futs: Vec<_> = positions
-        .iter()
-        .map(|pos| async move {
-            let mid = fetch_midpoint(client, &pos.token_id).await?;
-            Ok::<_, anyhow::Error>((pos.token_id.clone(), mid))
-        })
-        .collect();
-    let current_prices: HashMap<String, Decimal> = try_join_all(futs).await?.into_iter().collect();
-
-    let starting_balance = db.get_starting_balance()?;
-    let current_balance = db.get_balance()?;
-
-    let report = portfolio::compute_pnl(
-        &positions,
-        &current_prices,
-        &starting_balance,
-        &current_balance,
-    )?;
+    let data = build_pnl_data(client).await?;
+    let report = &data.report;
 
     if json {
-        print_output(true, &[], vec![], &report);
+        print_output(true, &[], vec![], report);
     } else {
-        println!("Starting balance: {}", report.starting_balance);
-        println!("Current balance:  {}", report.current_balance);
-        println!("Unrealized P&L:   {}", report.total_unrealized_pnl);
-        println!("Total P&L:        {}", report.total_pnl);
+        println!("Starting Balance: ${}", report.starting_balance);
+        println!("Cash:             ${}", report.current_balance);
+        println!("Position Value:   ${}", report.position_value);
+        println!("Total Value:      ${}", report.total_value);
+        println!("Net P&L:          ${}", report.total_pnl);
         println!();
 
         let headers = &[
-            "Token ID",
+            "Market",
+            "Outcome",
             "Side",
             "Size",
             "Avg Price",
             "Current Price",
+            "Value",
             "Unrealized P&L",
         ];
         let rows: Vec<Vec<String>> = report
             .positions
             .iter()
             .map(|p| {
+                let (market_name, outcome_name) = display_names(&data.metadata, &p.token_id);
                 vec![
-                    truncate_token_id(&p.token_id),
+                    market_name,
+                    outcome_name,
                     p.side.clone(),
                     p.size.clone(),
                     p.avg_price.clone(),
                     p.current_price.clone(),
+                    p.value.clone(),
                     p.unrealized_pnl.clone(),
                 ]
             })
             .collect();
-        print_output(false, headers, rows, &report);
+        print_output(false, headers, rows, report);
     }
 
     Ok(())
@@ -313,6 +393,57 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
 struct ResetResult {
     balance: String,
     message: String,
+}
+
+pub async fn portfolio<S: State>(client: &Client<S>, json: bool) -> Result<()> {
+    let data = build_pnl_data(client).await?;
+    let report = &data.report;
+
+    if json {
+        print_output(true, &[], vec![], report);
+    } else {
+        println!("Balance: ${}", report.current_balance);
+        println!();
+
+        if !report.positions.is_empty() {
+            let headers = &[
+                "Market",
+                "Outcome",
+                "Side",
+                "Size",
+                "Avg Price",
+                "Current",
+                "Value",
+                "P&L",
+            ];
+            let rows: Vec<Vec<String>> = report
+                .positions
+                .iter()
+                .map(|p| {
+                    let (market_name, outcome_name) = display_names(&data.metadata, &p.token_id);
+                    vec![
+                        market_name,
+                        outcome_name,
+                        p.side.clone(),
+                        p.size.clone(),
+                        p.avg_price.clone(),
+                        p.current_price.clone(),
+                        format!("${}", p.value),
+                        format!("${}", p.unrealized_pnl),
+                    ]
+                })
+                .collect();
+            print_output(false, headers, rows, &report.positions);
+            println!();
+        }
+
+        println!("Cash:            ${}", report.current_balance);
+        println!("Position Value:  ${}", report.position_value);
+        println!("Total Value:     ${}", report.total_value);
+        println!("Net P&L:         ${}", report.total_pnl);
+    }
+
+    Ok(())
 }
 
 pub fn reset(balance: &str, json: bool) -> Result<()> {
@@ -337,18 +468,30 @@ pub fn reset(balance: &str, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use crate::dry_run::db::DryRunDb;
+    use polymarket_client_sdk::types::U256;
 
     fn dec(s: &str) -> Decimal {
         Decimal::from_str(s).unwrap()
     }
 
+    fn test_resolved(token_id: &str) -> ResolvedMarket {
+        ResolvedMarket {
+            token_id: U256::ZERO,
+            token_id_str: token_id.to_string(),
+            slug: None,
+            question: None,
+            outcome: None,
+        }
+    }
+
     #[test]
     fn record_trade_buy_deducts_balance() {
         let db = DryRunDb::open_in_memory().unwrap();
+        let resolved = test_resolved("tok_a");
         // Default balance is 1000.00
         record_trade(
             &db,
-            "tok_a",
+            &resolved,
             Side::Buy,
             dec("100.00"),
             dec("200"),
@@ -367,9 +510,10 @@ mod tests {
     #[test]
     fn record_trade_buy_insufficient_balance() {
         let db = DryRunDb::open_in_memory().unwrap();
+        let resolved = test_resolved("tok_a");
         let result = record_trade(
             &db,
-            "tok_a",
+            &resolved,
             Side::Buy,
             dec("2000.00"),
             dec("100"),
@@ -389,10 +533,11 @@ mod tests {
     #[test]
     fn record_trade_sell_credits_balance() {
         let db = DryRunDb::open_in_memory().unwrap();
+        let resolved = test_resolved("tok_a");
         // First buy some shares
         record_trade(
             &db,
-            "tok_a",
+            &resolved,
             Side::Buy,
             dec("50.00"),
             dec("100"),
@@ -405,7 +550,7 @@ mod tests {
         // Now sell some
         record_trade(
             &db,
-            "tok_a",
+            &resolved,
             Side::Sell,
             dec("30.00"),
             dec("50"),
@@ -419,10 +564,11 @@ mod tests {
     #[test]
     fn record_trade_sell_insufficient_position() {
         let db = DryRunDb::open_in_memory().unwrap();
+        let resolved = test_resolved("tok_a");
         // No position at all
         let result = record_trade(
             &db,
-            "tok_a",
+            &resolved,
             Side::Sell,
             dec("50.00"),
             dec("10"),
@@ -438,10 +584,11 @@ mod tests {
     #[test]
     fn record_trade_sell_more_than_held() {
         let db = DryRunDb::open_in_memory().unwrap();
+        let resolved = test_resolved("tok_a");
         // Buy 5 shares
         record_trade(
             &db,
-            "tok_a",
+            &resolved,
             Side::Buy,
             dec("25.00"),
             dec("5"),
@@ -453,7 +600,7 @@ mod tests {
         // Try to sell 10
         let result = record_trade(
             &db,
-            "tok_a",
+            &resolved,
             Side::Sell,
             dec("50.00"),
             dec("10"),
@@ -473,10 +620,11 @@ mod tests {
     #[test]
     fn record_trade_buy_exact_balance() {
         let db = DryRunDb::open_in_memory().unwrap();
+        let resolved = test_resolved("tok_a");
         // Spend exactly 1000.00
         record_trade(
             &db,
-            "tok_a",
+            &resolved,
             Side::Buy,
             dec("1000.00"),
             dec("2000"),
@@ -491,9 +639,11 @@ mod tests {
     #[test]
     fn record_trade_multiple_tokens() {
         let db = DryRunDb::open_in_memory().unwrap();
+        let resolved_a = test_resolved("tok_a");
+        let resolved_b = test_resolved("tok_b");
         record_trade(
             &db,
-            "tok_a",
+            &resolved_a,
             Side::Buy,
             dec("100.00"),
             dec("10"),
@@ -503,7 +653,7 @@ mod tests {
         .unwrap();
         record_trade(
             &db,
-            "tok_b",
+            &resolved_b,
             Side::Buy,
             dec("200.00"),
             dec("20"),
@@ -518,7 +668,7 @@ mod tests {
         // Selling tok_a should not be affected by tok_b position
         let result = record_trade(
             &db,
-            "tok_a",
+            &resolved_a,
             Side::Sell,
             dec("50.00"),
             dec("15"),
@@ -526,5 +676,68 @@ mod tests {
             false,
         );
         assert!(result.is_err()); // only 10 held for tok_a
+    }
+
+    #[test]
+    fn close_full_position_zeros_it() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        let resolved = test_resolved("tok_a");
+        // Buy 10 shares
+        record_trade(
+            &db,
+            &resolved,
+            Side::Buy,
+            dec("50.00"),
+            dec("10"),
+            dec("5.0"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(db.get_balance().unwrap(), "950.00");
+
+        // Sell all 10 shares at 6.0 midpoint
+        record_trade(
+            &db,
+            &resolved,
+            Side::Sell,
+            dec("60.00"),
+            dec("10"),
+            dec("6.0"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(db.get_balance().unwrap(), "1010.00");
+
+        // Position should be zero
+        assert_eq!(db.net_position_size("tok_a").unwrap(), Decimal::ZERO);
+    }
+
+    #[test]
+    fn close_partial_position() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        let resolved = test_resolved("tok_a");
+        record_trade(
+            &db,
+            &resolved,
+            Side::Buy,
+            dec("50.00"),
+            dec("10"),
+            dec("5.0"),
+            false,
+        )
+        .unwrap();
+
+        // Sell 4 shares
+        record_trade(
+            &db,
+            &resolved,
+            Side::Sell,
+            dec("24.00"),
+            dec("4"),
+            dec("6.0"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(db.net_position_size("tok_a").unwrap(), dec("6"));
     }
 }

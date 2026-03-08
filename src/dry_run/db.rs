@@ -1,7 +1,10 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +18,14 @@ pub struct Trade {
     pub timestamp: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketMetadata {
+    pub token_id: String,
+    pub slug: Option<String>,
+    pub question: Option<String>,
+    pub outcome: Option<String>,
+}
+
 const DEFAULT_STARTING_BALANCE: &str = "1000.00";
 
 pub struct DryRunDb {
@@ -24,6 +35,18 @@ pub struct DryRunDb {
 fn db_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("could not determine home directory")?;
     Ok(home.join(".polymarket").join("dry-run.db"))
+}
+
+fn row_to_trade(row: &rusqlite::Row) -> rusqlite::Result<Trade> {
+    Ok(Trade {
+        id: row.get(0)?,
+        token_id: row.get(1)?,
+        side: row.get(2)?,
+        price: row.get(3)?,
+        size: row.get(4)?,
+        cost: row.get(5)?,
+        timestamp: row.get(6)?,
+    })
 }
 
 impl DryRunDb {
@@ -64,6 +87,13 @@ impl DryRunDb {
             CREATE TABLE IF NOT EXISTS state (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS market_metadata (
+                token_id TEXT PRIMARY KEY,
+                slug     TEXT,
+                question TEXT,
+                outcome  TEXT
             );",
         )?;
 
@@ -146,17 +176,7 @@ impl DryRunDb {
                 "SELECT id, token_id, side, price, size, cost, timestamp
                  FROM trades WHERE id = ?1",
                 params![trade_id],
-                |row| {
-                    Ok(Trade {
-                        id: row.get(0)?,
-                        token_id: row.get(1)?,
-                        side: row.get(2)?,
-                        price: row.get(3)?,
-                        size: row.get(4)?,
-                        cost: row.get(5)?,
-                        timestamp: row.get(6)?,
-                    })
-                },
+                row_to_trade,
             )
             .optional()?;
         Ok(trade)
@@ -168,17 +188,7 @@ impl DryRunDb {
              FROM trades ORDER BY timestamp DESC LIMIT ?1",
         )?;
         let trades = stmt
-            .query_map(params![limit], |row| {
-                Ok(Trade {
-                    id: row.get(0)?,
-                    token_id: row.get(1)?,
-                    side: row.get(2)?,
-                    price: row.get(3)?,
-                    size: row.get(4)?,
-                    cost: row.get(5)?,
-                    timestamp: row.get(6)?,
-                })
-            })?
+            .query_map(params![limit], row_to_trade)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(trades)
     }
@@ -189,37 +199,96 @@ impl DryRunDb {
              FROM trades ORDER BY timestamp DESC",
         )?;
         let trades = stmt
-            .query_map([], |row| {
-                Ok(Trade {
-                    id: row.get(0)?,
-                    token_id: row.get(1)?,
-                    side: row.get(2)?,
-                    price: row.get(3)?,
-                    size: row.get(4)?,
-                    cost: row.get(5)?,
-                    timestamp: row.get(6)?,
-                })
-            })?
+            .query_map([], row_to_trade)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(trades)
     }
 
     /// Get the net position size for a specific token_id.
     /// Returns the sum of buy sizes minus sell sizes.
-    pub fn net_position_size(&self, token_id: &str) -> Result<f64> {
-        let result: f64 = self.conn.query_row(
-            "SELECT COALESCE(
-                SUM(CASE side WHEN 'buy' THEN CAST(size AS REAL) ELSE -CAST(size AS REAL) END),
-                0.0
-             )
-             FROM trades WHERE token_id = ?1",
-            params![token_id],
-            |row| row.get(0),
+    pub fn net_position_size(&self, token_id: &str) -> Result<Decimal> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT side, size FROM trades WHERE token_id = ?1")?;
+        let rows = stmt.query_map(params![token_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut net = Decimal::ZERO;
+        for row in rows {
+            let (side, size_str) = row?;
+            let size = Decimal::from_str(&size_str)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            match side.as_str() {
+                "buy" => net += size,
+                "sell" => net -= size,
+                _ => {}
+            }
+        }
+        Ok(net)
+    }
+
+    pub fn upsert_metadata(
+        &self,
+        token_id: &str,
+        slug: Option<&str>,
+        question: Option<&str>,
+        outcome: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO market_metadata (token_id, slug, question, outcome)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(token_id) DO UPDATE SET
+                slug = excluded.slug,
+                question = excluded.question,
+                outcome = excluded.outcome",
+            params![token_id, slug, question, outcome],
         )?;
-        Ok(result)
+        Ok(())
+    }
+
+    #[allow(dead_code, reason = "used in tests and by future display commands")]
+    pub fn get_metadata(&self, token_id: &str) -> Result<Option<MarketMetadata>> {
+        let meta = self
+            .conn
+            .query_row(
+                "SELECT token_id, slug, question, outcome FROM market_metadata WHERE token_id = ?1",
+                params![token_id],
+                |row| {
+                    Ok(MarketMetadata {
+                        token_id: row.get(0)?,
+                        slug: row.get(1)?,
+                        question: row.get(2)?,
+                        outcome: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(meta)
+    }
+
+    pub fn all_metadata(&self) -> Result<HashMap<String, MarketMetadata>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT token_id, slug, question, outcome FROM market_metadata")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(MarketMetadata {
+                token_id: row.get(0)?,
+                slug: row.get(1)?,
+                question: row.get(2)?,
+                outcome: row.get(3)?,
+            })
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let meta = row?;
+            map.insert(meta.token_id.clone(), meta);
+        }
+        Ok(map)
     }
 
     pub fn reset(&self, starting_balance: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM market_metadata", [])?;
         self.conn.execute("DELETE FROM trades", [])?;
         self.conn.execute("DELETE FROM state", [])?;
         self.conn.execute(
@@ -237,6 +306,7 @@ impl DryRunDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     fn make_trade(id: &str, token_id: &str, side: &str, price: &str, size: &str) -> Trade {
         let cost = {
@@ -342,9 +412,10 @@ mod tests {
             .unwrap();
         db.insert_trade(&make_trade("t2", "tok_a", "buy", "0.60", "5"))
             .unwrap();
-
-        let net = db.net_position_size("tok_a").unwrap();
-        assert!((net - 15.0).abs() < 1e-9);
+        assert_eq!(
+            db.net_position_size("tok_a").unwrap(),
+            Decimal::from_str("15").unwrap()
+        );
     }
 
     #[test]
@@ -354,16 +425,16 @@ mod tests {
             .unwrap();
         db.insert_trade(&make_trade("t2", "tok_a", "sell", "0.60", "3"))
             .unwrap();
-
-        let net = db.net_position_size("tok_a").unwrap();
-        assert!((net - 7.0).abs() < 1e-9);
+        assert_eq!(
+            db.net_position_size("tok_a").unwrap(),
+            Decimal::from_str("7").unwrap()
+        );
     }
 
     #[test]
     fn net_position_size_unknown_token_is_zero() {
         let db = DryRunDb::open_in_memory().unwrap();
-        let net = db.net_position_size("nonexistent").unwrap();
-        assert!((net).abs() < 1e-9);
+        assert_eq!(db.net_position_size("nonexistent").unwrap(), Decimal::ZERO);
     }
 
     #[test]
@@ -373,9 +444,14 @@ mod tests {
             .unwrap();
         db.insert_trade(&make_trade("t2", "tok_b", "buy", "0.70", "20"))
             .unwrap();
-
-        assert!((db.net_position_size("tok_a").unwrap() - 10.0).abs() < 1e-9);
-        assert!((db.net_position_size("tok_b").unwrap() - 20.0).abs() < 1e-9);
+        assert_eq!(
+            db.net_position_size("tok_a").unwrap(),
+            Decimal::from_str("10").unwrap()
+        );
+        assert_eq!(
+            db.net_position_size("tok_b").unwrap(),
+            Decimal::from_str("20").unwrap()
+        );
     }
 
     #[test]
@@ -390,6 +466,63 @@ mod tests {
         assert_eq!(db.all_trades().unwrap().len(), 0);
         assert_eq!(db.get_balance().unwrap(), "2000.00");
         assert_eq!(db.get_starting_balance().unwrap(), "2000.00");
+    }
+
+    #[test]
+    fn store_and_retrieve_metadata() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.upsert_metadata(
+            "tok_a",
+            Some("inflation-2026"),
+            Some("Will inflation exceed 3%?"),
+            Some("Yes"),
+        )
+        .unwrap();
+        let meta = db.get_metadata("tok_a").unwrap().unwrap();
+        assert_eq!(meta.slug.as_deref(), Some("inflation-2026"));
+        assert_eq!(meta.question.as_deref(), Some("Will inflation exceed 3%?"));
+        assert_eq!(meta.outcome.as_deref(), Some("Yes"));
+    }
+
+    #[test]
+    fn get_metadata_missing_returns_none() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        assert!(db.get_metadata("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn upsert_metadata_updates_existing() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.upsert_metadata("tok_a", Some("old-slug"), Some("Old question"), Some("Yes"))
+            .unwrap();
+        db.upsert_metadata("tok_a", Some("new-slug"), Some("New question"), Some("No"))
+            .unwrap();
+        let meta = db.get_metadata("tok_a").unwrap().unwrap();
+        assert_eq!(meta.slug.as_deref(), Some("new-slug"));
+        assert_eq!(meta.question.as_deref(), Some("New question"));
+        assert_eq!(meta.outcome.as_deref(), Some("No"));
+    }
+
+    #[test]
+    fn reset_clears_metadata() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.upsert_metadata("tok_a", Some("slug"), Some("question"), Some("Yes"))
+            .unwrap();
+        db.reset("1000.00").unwrap();
+        assert!(db.get_metadata("tok_a").unwrap().is_none());
+    }
+
+    #[test]
+    fn all_metadata_returns_map() {
+        let db = DryRunDb::open_in_memory().unwrap();
+        db.upsert_metadata("tok_a", Some("slug-a"), Some("Question A"), Some("Yes"))
+            .unwrap();
+        db.upsert_metadata("tok_b", Some("slug-b"), Some("Question B"), Some("No"))
+            .unwrap();
+        let map = db.all_metadata().unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["tok_a"].slug.as_deref(), Some("slug-a"));
+        assert_eq!(map["tok_b"].slug.as_deref(), Some("slug-b"));
     }
 
     #[test]

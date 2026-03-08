@@ -3,6 +3,7 @@ pub mod dry_run;
 pub mod markets;
 pub mod orders;
 pub mod prices;
+pub mod watch;
 
 use anyhow::Result;
 use polymarket_client_sdk::clob::types::Side;

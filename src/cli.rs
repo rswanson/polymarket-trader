@@ -46,15 +46,46 @@ pub struct MarketsArgs {
 
 #[derive(Subcommand)]
 pub enum MarketsCommand {
-    /// List active markets
+    /// List active markets (uses Gamma API)
     List {
+        /// Maximum number of results
         #[arg(long, default_value = "25")]
         limit: usize,
+        /// Search query text
+        #[arg(long)]
+        query: Option<String>,
+        /// Include closed/settled markets in results
+        #[arg(long)]
+        include_closed: bool,
+        /// Sort by: volume, volume_24hr, liquidity, created_at
+        #[arg(long, default_value = "volume")]
+        sort: String,
+        /// Minimum total volume filter
+        #[arg(long)]
+        min_volume: Option<String>,
     },
-    /// Show market details
+    /// Show market details (accepts condition ID or slug)
     Show {
-        /// Condition ID of the market
-        condition_id: String,
+        /// Condition ID or slug of the market
+        market: String,
+    },
+    /// Show trending markets (top by 24h volume)
+    Trending {
+        /// Maximum number of results
+        #[arg(long, default_value = "10")]
+        limit: usize,
+    },
+    /// Watch live prices for markets
+    Watch {
+        /// Market slugs or token IDs to watch
+        #[arg(required = true)]
+        markets: Vec<String>,
+        /// Outcome name (applies to all watched markets)
+        #[arg(long)]
+        outcome: Option<String>,
+        /// Refresh interval in seconds (minimum 1)
+        #[arg(long, default_value = "5", value_parser = clap::value_parser!(u64).range(1..))]
+        interval: u64,
     },
 }
 
@@ -67,11 +98,29 @@ pub struct PricesArgs {
 #[derive(Subcommand)]
 pub enum PricesCommand {
     /// Get current midpoint price
-    Midpoint { token_id: String },
+    Midpoint {
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
+    },
     /// Get bid-ask spread
-    Spread { token_id: String },
+    Spread {
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
+    },
     /// Get full order book
-    Book { token_id: String },
+    Book {
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
+    },
 }
 
 #[derive(Parser)]
@@ -89,7 +138,11 @@ pub enum OrdersCommand {
     },
     /// Place a limit order
     Limit {
-        token_id: String,
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
         /// Side: "buy" or "sell"
         side: String,
         /// Price (0.01 - 0.99)
@@ -99,7 +152,11 @@ pub enum OrdersCommand {
     },
     /// Place a market order
     Market {
-        token_id: String,
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
         /// Side: "buy" or "sell"
         side: String,
         /// Amount in USDC
@@ -141,7 +198,11 @@ pub struct DryRunArgs {
 pub enum DryRunCommand {
     /// Simulate a limit order (fills at current midpoint)
     Limit {
-        token_id: String,
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
         /// Side: "buy" or "sell"
         side: String,
         /// Price (for reference, fill is at midpoint)
@@ -151,7 +212,11 @@ pub enum DryRunCommand {
     },
     /// Simulate a market order (fills at current midpoint)
     Market {
-        token_id: String,
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name (e.g., "Yes", "No")
+        #[arg(long)]
+        outcome: Option<String>,
         /// Side: "buy" or "sell"
         side: String,
         /// Amount in USDC
@@ -168,6 +233,19 @@ pub enum DryRunCommand {
     },
     /// Show profit and loss report
     Pnl,
+    /// Close a position (sell at current market price)
+    Close {
+        /// Market slug or token ID
+        market: String,
+        /// Outcome name
+        #[arg(long)]
+        outcome: Option<String>,
+        /// Number of shares to sell (default: entire position)
+        #[arg(long)]
+        size: Option<String>,
+    },
+    /// Show full portfolio: positions with names, prices, P&L, and totals
+    Portfolio,
     /// Reset dry-run state
     Reset {
         #[arg(long, default_value = "1000.00")]
