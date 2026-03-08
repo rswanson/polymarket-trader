@@ -1,6 +1,6 @@
 use alloy::signers::Signer;
-use polymarket_client_sdk::auth::state::{Authenticated, Unauthenticated};
 use polymarket_client_sdk::auth::Normal;
+use polymarket_client_sdk::auth::state::{Authenticated, Unauthenticated};
 use polymarket_client_sdk::clob::{Client, Config};
 
 pub fn create_unauthenticated_client(host: &str) -> anyhow::Result<Client<Unauthenticated>> {

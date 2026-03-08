@@ -12,7 +12,12 @@ pub struct Cli {
     pub kms_key_id: Option<String>,
 
     /// Polymarket CLOB API host
-    #[arg(long, default_value = "https://clob.polymarket.com", env = "POLYMARKET_CLOB_HOST", global = true)]
+    #[arg(
+        long,
+        default_value = "https://clob.polymarket.com",
+        env = "POLYMARKET_CLOB_HOST",
+        global = true
+    )]
     pub clob_host: String,
 
     #[command(subcommand)]

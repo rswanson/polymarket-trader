@@ -36,8 +36,8 @@ struct OrderLevel {
 }
 
 pub async fn midpoint<S: State>(client: &Client<S>, token_id_str: &str, json: bool) -> Result<()> {
-    let token_id = U256::from_str(token_id_str)
-        .map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
+    let token_id =
+        U256::from_str(token_id_str).map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
 
     let request = MidpointRequest::builder().token_id(token_id).build();
     let response = match client.midpoint(&request).await {
@@ -61,8 +61,8 @@ pub async fn midpoint<S: State>(client: &Client<S>, token_id_str: &str, json: bo
 }
 
 pub async fn spread<S: State>(client: &Client<S>, token_id_str: &str, json: bool) -> Result<()> {
-    let token_id = U256::from_str(token_id_str)
-        .map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
+    let token_id =
+        U256::from_str(token_id_str).map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
 
     let request = SpreadRequest::builder().token_id(token_id).build();
     let response = match client.spread(&request).await {
@@ -86,10 +86,12 @@ pub async fn spread<S: State>(client: &Client<S>, token_id_str: &str, json: bool
 }
 
 pub async fn book<S: State>(client: &Client<S>, token_id_str: &str, json: bool) -> Result<()> {
-    let token_id = U256::from_str(token_id_str)
-        .map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
+    let token_id =
+        U256::from_str(token_id_str).map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
 
-    let request = OrderBookSummaryRequest::builder().token_id(token_id).build();
+    let request = OrderBookSummaryRequest::builder()
+        .token_id(token_id)
+        .build();
     let response = match client.order_book(&request).await {
         Ok(r) => r,
         Err(e) => {

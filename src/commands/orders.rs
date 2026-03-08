@@ -1,5 +1,5 @@
-use anyhow::Result;
 use alloy::signers::Signer;
+use anyhow::Result;
 use polymarket_client_sdk::auth::Normal;
 use polymarket_client_sdk::auth::state::Authenticated;
 use polymarket_client_sdk::clob::Client;
@@ -39,7 +39,9 @@ fn parse_side(s: &str) -> Result<Side> {
     match s.to_lowercase().as_str() {
         "buy" => Ok(Side::Buy),
         "sell" => Ok(Side::Sell),
-        other => Err(anyhow::anyhow!("Invalid side '{other}', expected 'buy' or 'sell'")),
+        other => Err(anyhow::anyhow!(
+            "Invalid side '{other}', expected 'buy' or 'sell'"
+        )),
     }
 }
 
@@ -109,8 +111,7 @@ pub async fn place_limit<S2: Signer>(
     let token_id =
         U256::from_str(token_id_str).map_err(|e| anyhow::anyhow!("Invalid token ID: {e}"))?;
     let side = parse_side(side_str)?;
-    let price =
-        Decimal::from_str(price_str).map_err(|e| anyhow::anyhow!("Invalid price: {e}"))?;
+    let price = Decimal::from_str(price_str).map_err(|e| anyhow::anyhow!("Invalid price: {e}"))?;
     let size = Decimal::from_str(size_str).map_err(|e| anyhow::anyhow!("Invalid size: {e}"))?;
 
     let signable = client
@@ -151,10 +152,7 @@ pub async fn place_limit<S2: Signer>(
     }
 
     let headers = &["Success", "Order ID"];
-    let rows = vec![vec![
-        result.success.to_string(),
-        result.order_id.clone(),
-    ]];
+    let rows = vec![vec![result.success.to_string(), result.order_id.clone()]];
     print_output(json, headers, rows, &result);
 
     Ok(())
@@ -213,10 +211,7 @@ pub async fn place_market<S2: Signer>(
     }
 
     let headers = &["Success", "Order ID"];
-    let rows = vec![vec![
-        result.success.to_string(),
-        result.order_id.clone(),
-    ]];
+    let rows = vec![vec![result.success.to_string(), result.order_id.clone()]];
     print_output(json, headers, rows, &result);
 
     Ok(())
@@ -259,7 +254,11 @@ pub async fn cancel_all(
     let response = match market {
         Some(market_id) => {
             let request = CancelMarketOrderRequest::builder()
-                .market(market_id.parse().map_err(|e| anyhow::anyhow!("Invalid market ID: {e}"))?)
+                .market(
+                    market_id
+                        .parse()
+                        .map_err(|e| anyhow::anyhow!("Invalid market ID: {e}"))?,
+                )
                 .build();
             client
                 .cancel_market_orders(&request)

@@ -53,10 +53,7 @@ pub async fn balance(client: &Client<Authenticated<Normal>>, json: bool) -> Resu
         .iter()
         .map(|a| format!("{}: {}", a.address, a.allowance))
         .collect();
-    let rows = vec![vec![
-        result.balance.clone(),
-        allowances_str.join(", "),
-    ]];
+    let rows = vec![vec![result.balance.clone(), allowances_str.join(", ")]];
     print_output(json, headers, rows, &result);
 
     Ok(())

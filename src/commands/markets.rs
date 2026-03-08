@@ -41,10 +41,7 @@ pub async fn list_markets<S: State>(client: &Client<S>, limit: usize, json: bool
 
         for m in &page.data {
             all_markets.push(MarketRow {
-                condition_id: m
-                    .condition_id
-                    .map(|c| format!("{c}"))
-                    .unwrap_or_default(),
+                condition_id: m.condition_id.map(|c| format!("{c}")).unwrap_or_default(),
                 active: m.active,
                 tokens: m
                     .tokens
