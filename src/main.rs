@@ -33,13 +33,42 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     match &cli.command {
         // Markets and Prices don't require authentication
         Command::Markets(args) => {
-            let client = client::create_unauthenticated_client(&cli.clob_host)?;
+            let gamma_client = gamma::create_gamma_client();
             match &args.command {
-                MarketsCommand::List { limit } => {
-                    commands::markets::list_markets(&client, *limit, json).await?;
+                MarketsCommand::List {
+                    limit,
+                    query,
+                    active,
+                    sort,
+                    min_volume,
+                } => {
+                    commands::markets::list_markets(
+                        &gamma_client,
+                        *limit,
+                        query.as_deref(),
+                        *active,
+                        sort,
+                        min_volume.as_deref(),
+                        json,
+                    )
+                    .await?;
                 }
-                MarketsCommand::Show { condition_id } => {
-                    commands::markets::show_market(&client, condition_id, json).await?;
+                MarketsCommand::Show { market } => {
+                    let clob_client = client::create_unauthenticated_client(&cli.clob_host)?;
+                    commands::markets::show_market(&gamma_client, &clob_client, market, json)
+                        .await?;
+                }
+                MarketsCommand::Trending { limit } => {
+                    commands::markets::list_markets(
+                        &gamma_client,
+                        *limit,
+                        None,
+                        true,
+                        "volume_24hr",
+                        None,
+                        json,
+                    )
+                    .await?;
                 }
             }
         }

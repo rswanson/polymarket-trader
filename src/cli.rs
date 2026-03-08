@@ -46,15 +46,34 @@ pub struct MarketsArgs {
 
 #[derive(Subcommand)]
 pub enum MarketsCommand {
-    /// List active markets
+    /// List active markets (uses Gamma API)
     List {
+        /// Maximum number of results
         #[arg(long, default_value = "25")]
         limit: usize,
+        /// Search query text
+        #[arg(long)]
+        query: Option<String>,
+        /// Show only active markets (default: true)
+        #[arg(long, default_value = "true")]
+        active: bool,
+        /// Sort by: volume, volume_24hr, liquidity, created_at
+        #[arg(long, default_value = "volume")]
+        sort: String,
+        /// Minimum total volume filter
+        #[arg(long)]
+        min_volume: Option<String>,
     },
-    /// Show market details
+    /// Show market details (accepts condition ID or slug)
     Show {
-        /// Condition ID of the market
-        condition_id: String,
+        /// Condition ID or slug of the market
+        market: String,
+    },
+    /// Show trending markets (top by 24h volume)
+    Trending {
+        /// Maximum number of results
+        #[arg(long, default_value = "10")]
+        limit: usize,
     },
 }
 

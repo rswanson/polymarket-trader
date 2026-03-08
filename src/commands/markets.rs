@@ -1,15 +1,32 @@
 use anyhow::{Context, Result};
 use polymarket_client_sdk::auth::state::State;
-use polymarket_client_sdk::clob::Client;
+use polymarket_client_sdk::clob::Client as ClobClient;
+use polymarket_client_sdk::gamma;
+use polymarket_client_sdk::gamma::types::request::{
+    MarketBySlugRequest, MarketsRequest, SearchRequest,
+};
+use polymarket_client_sdk::gamma::types::response::Market;
+use polymarket_client_sdk::types::Decimal;
 use serde::Serialize;
+use std::str::FromStr;
 
-use super::CLOB_END_CURSOR;
 use crate::output::print_output;
 
 #[derive(Serialize)]
-struct MarketRow {
-    condition_id: String,
+struct GammaMarketRow {
+    slug: String,
+    question: String,
+    volume: String,
+    outcomes: String,
+}
+
+#[derive(Serialize)]
+struct MarketDetail {
+    slug: String,
+    question: String,
     active: bool,
+    closed: bool,
+    volume: String,
     tokens: Vec<TokenInfo>,
 }
 
@@ -20,30 +37,134 @@ struct TokenInfo {
     price: String,
 }
 
-#[derive(Serialize)]
-struct MarketDetail {
-    condition_id: String,
-    question: String,
-    active: bool,
-    closed: bool,
-    neg_risk: bool,
-    tokens: Vec<TokenInfo>,
+fn format_outcomes(m: &Market) -> String {
+    let outcomes = m.outcomes.as_ref();
+    let prices = m.outcome_prices.as_ref();
+    match (outcomes, prices) {
+        (Some(names), Some(vals)) => names
+            .iter()
+            .zip(vals.iter())
+            .map(|(name, price)| format!("{name}: {price}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        (Some(names), None) => names.join(", "),
+        _ => String::new(),
+    }
 }
 
-pub async fn list_markets<S: State>(client: &Client<S>, limit: usize, json: bool) -> Result<()> {
-    let mut all_markets = Vec::new();
-    let mut cursor = None;
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max.saturating_sub(3)])
+    }
+}
 
-    loop {
-        let page = client
-            .simplified_markets(cursor)
+fn market_to_row(m: &Market) -> GammaMarketRow {
+    GammaMarketRow {
+        slug: m.slug.clone().unwrap_or_default(),
+        question: m.question.clone().unwrap_or_default(),
+        volume: m.volume.map(|v| v.to_string()).unwrap_or_default(),
+        outcomes: format_outcomes(m),
+    }
+}
+
+pub async fn list_markets(
+    gamma_client: &gamma::Client,
+    limit: usize,
+    query: Option<&str>,
+    active: bool,
+    sort: &str,
+    min_volume: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let markets: Vec<Market> = if let Some(q) = query {
+        let request = SearchRequest::builder().q(q).build();
+        let results = gamma_client
+            .search(&request)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .context("Failed to search markets")?;
+        results
+            .events
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|event| event.markets.unwrap_or_default())
+            .collect()
+    } else {
+        let closed = if active { Some(false) } else { None };
+        let vol_min = match min_volume {
+            Some(v) => Some(Decimal::from_str(v).context("Invalid min_volume value")?),
+            None => None,
+        };
 
-        for m in &page.data {
-            all_markets.push(MarketRow {
-                condition_id: m.condition_id.map(|c| format!("{c}")).unwrap_or_default(),
+        let mut request = MarketsRequest::default();
+        request.limit = Some(limit as i32);
+        request.order = Some(sort.to_string());
+        request.ascending = Some(false);
+        request.closed = closed;
+        request.volume_num_min = vol_min;
+
+        gamma_client
+            .markets(&request)
+            .await
+            .context("Failed to fetch markets")?
+    };
+
+    let markets: Vec<Market> = markets.into_iter().take(limit).collect();
+    let rows_data: Vec<GammaMarketRow> = markets.iter().map(market_to_row).collect();
+
+    let headers = &["Slug", "Question", "Volume", "Outcomes"];
+    let table_rows: Vec<Vec<String>> = rows_data
+        .iter()
+        .map(|r| {
+            vec![
+                r.slug.clone(),
+                truncate(&r.question, 60),
+                r.volume.clone(),
+                r.outcomes.clone(),
+            ]
+        })
+        .collect();
+
+    print_output(json, headers, table_rows, &rows_data);
+
+    Ok(())
+}
+
+pub async fn show_market<S: State>(
+    gamma_client: &gamma::Client,
+    clob_client: &ClobClient<S>,
+    market: &str,
+    json: bool,
+) -> Result<()> {
+    let gamma_result = gamma_client
+        .market_by_slug(&MarketBySlugRequest::builder().slug(market).build())
+        .await;
+
+    let detail = match gamma_result {
+        Ok(m) => {
+            let tokens = build_tokens_from_gamma(&m);
+            MarketDetail {
+                slug: m.slug.clone().unwrap_or_default(),
+                question: m.question.clone().unwrap_or_default(),
+                active: m.active.unwrap_or(false),
+                closed: m.closed.unwrap_or(false),
+                volume: m.volume.map(|v| v.to_string()).unwrap_or_default(),
+                tokens,
+            }
+        }
+        Err(_) => {
+            // Fall back to CLOB by condition_id
+            let m = clob_client
+                .market(market)
+                .await
+                .context("Failed to fetch market by condition ID")?;
+            MarketDetail {
+                slug: String::new(),
+                question: m.question.clone(),
                 active: m.active,
+                closed: m.closed,
+                volume: String::new(),
                 tokens: m
                     .tokens
                     .iter()
@@ -53,98 +174,53 @@ pub async fn list_markets<S: State>(client: &Client<S>, limit: usize, json: bool
                         price: t.price.to_string(),
                     })
                     .collect(),
-            });
-
-            if all_markets.len() >= limit {
-                break;
             }
         }
-
-        if all_markets.len() >= limit || page.next_cursor == CLOB_END_CURSOR || page.data.is_empty()
-        {
-            break;
-        }
-
-        cursor = Some(page.next_cursor);
-    }
-
-    all_markets.truncate(limit);
-
-    let headers = &["Condition ID", "Active", "Tokens"];
-    let rows: Vec<Vec<String>> = all_markets
-        .iter()
-        .map(|m| {
-            let tokens_str: Vec<String> = m
-                .tokens
-                .iter()
-                .map(|t| format!("{}: {}", t.outcome, t.price))
-                .collect();
-            vec![
-                m.condition_id.clone(),
-                m.active.to_string(),
-                tokens_str.join(", "),
-            ]
-        })
-        .collect();
-
-    print_output(json, headers, rows, &all_markets);
-
-    Ok(())
-}
-
-pub async fn show_market<S: State>(
-    client: &Client<S>,
-    condition_id: &str,
-    json: bool,
-) -> Result<()> {
-    let market = client
-        .market(condition_id)
-        .await
-        .context("Failed to fetch market")?;
-
-    let detail = MarketDetail {
-        condition_id: market
-            .condition_id
-            .map(|c| format!("{c}"))
-            .unwrap_or_default(),
-        question: market.question.clone(),
-        active: market.active,
-        closed: market.closed,
-        neg_risk: market.neg_risk,
-        tokens: market
-            .tokens
-            .iter()
-            .map(|t| TokenInfo {
-                token_id: t.token_id.to_string(),
-                outcome: t.outcome.clone(),
-                price: t.price.to_string(),
-            })
-            .collect(),
     };
 
-    let headers = &[
-        "Condition ID",
-        "Question",
-        "Active",
-        "Closed",
-        "Neg Risk",
-        "Tokens",
-    ];
+    let headers = &["Slug", "Question", "Active", "Closed", "Volume", "Tokens"];
     let tokens_str: Vec<String> = detail
         .tokens
         .iter()
         .map(|t| format!("{} ({}): {}", t.outcome, t.token_id, t.price))
         .collect();
     let rows = vec![vec![
-        detail.condition_id.clone(),
+        detail.slug.clone(),
         detail.question.clone(),
         detail.active.to_string(),
         detail.closed.to_string(),
-        detail.neg_risk.to_string(),
+        detail.volume.clone(),
         tokens_str.join("\n"),
     ]];
 
     print_output(json, headers, rows, &detail);
 
     Ok(())
+}
+
+fn build_tokens_from_gamma(m: &Market) -> Vec<TokenInfo> {
+    let outcomes = m.outcomes.as_ref();
+    let prices = m.outcome_prices.as_ref();
+    let token_ids = m.clob_token_ids.as_ref();
+
+    let outcome_names: Vec<&str> = outcomes
+        .map(|o| o.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+
+    let price_strs: Vec<String> = prices
+        .map(|p| p.iter().map(ToString::to_string).collect())
+        .unwrap_or_default();
+
+    let id_strs: Vec<String> = token_ids
+        .map(|ids| ids.iter().map(ToString::to_string).collect())
+        .unwrap_or_default();
+
+    let count = outcome_names.len();
+    (0..count)
+        .map(|i| TokenInfo {
+            token_id: id_strs.get(i).cloned().unwrap_or_default(),
+            outcome: outcome_names.get(i).unwrap_or(&"").to_string(),
+            price: price_strs.get(i).cloned().unwrap_or_default(),
+        })
+        .collect()
 }
