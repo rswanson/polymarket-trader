@@ -77,11 +77,11 @@ impl DryRunDb {
     }
 
     pub fn get_balance(&self) -> Result<String> {
-        let balance: String = self.conn.query_row(
-            "SELECT value FROM state WHERE key = 'balance'",
-            [],
-            |row| row.get(0),
-        )?;
+        let balance: String =
+            self.conn
+                .query_row("SELECT value FROM state WHERE key = 'balance'", [], |row| {
+                    row.get(0)
+                })?;
         Ok(balance)
     }
 
@@ -122,10 +122,8 @@ impl DryRunDb {
     pub fn delete_trade(&self, trade_id: &str) -> Result<Option<Trade>> {
         let trade = self.get_trade(trade_id)?;
         if trade.is_some() {
-            self.conn.execute(
-                "DELETE FROM trades WHERE id = ?1",
-                params![trade_id],
-            )?;
+            self.conn
+                .execute("DELETE FROM trades WHERE id = ?1", params![trade_id])?;
         }
         Ok(trade)
     }

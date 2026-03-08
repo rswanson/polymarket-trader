@@ -6,7 +6,9 @@ mod output;
 mod signer;
 
 use clap::Parser;
-use cli::{AccountCommand, Cli, Command, DryRunCommand, MarketsCommand, OrdersCommand, PricesCommand};
+use cli::{
+    AccountCommand, Cli, Command, DryRunCommand, MarketsCommand, OrdersCommand, PricesCommand,
+};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]

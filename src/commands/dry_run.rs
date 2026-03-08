@@ -4,8 +4,8 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use polymarket_client_sdk::auth::state::State;
-use polymarket_client_sdk::clob::types::request::MidpointRequest;
 use polymarket_client_sdk::clob::Client;
+use polymarket_client_sdk::clob::types::request::MidpointRequest;
 use polymarket_client_sdk::types::{Decimal, U256};
 use serde::Serialize;
 use uuid::Uuid;
@@ -280,8 +280,12 @@ pub async fn pnl<S: State>(client: &Client<S>, json: bool) -> Result<()> {
     let starting_balance = db.get_starting_balance()?;
     let current_balance = db.get_balance()?;
 
-    let report =
-        portfolio::compute_pnl(&positions, &current_prices, &starting_balance, &current_balance)?;
+    let report = portfolio::compute_pnl(
+        &positions,
+        &current_prices,
+        &starting_balance,
+        &current_balance,
+    )?;
 
     if json {
         print_output(true, &[], vec![], &report);
