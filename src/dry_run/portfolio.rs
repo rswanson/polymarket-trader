@@ -150,6 +150,95 @@ pub fn compute_pnl(
     })
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RealizedPnl {
+    pub total_realized_pnl: Decimal,
+    pub closed_trades: usize,
+    pub wins: usize,
+    pub losses: usize,
+}
+
+/// Compute realized P&L from trade history.
+///
+/// For each token: tracks total buy cost/size and total sell revenue/size.
+/// Realized P&L = sell_revenue - (avg_buy_price * sell_size).
+/// A "closed trade" = token where net position reaches zero.
+/// A "win" = closed trade with positive realized P&L.
+struct TradeAccum {
+    buy_size: Decimal,
+    buy_cost: Decimal,
+    sell_size: Decimal,
+    sell_revenue: Decimal,
+}
+
+impl Default for TradeAccum {
+    fn default() -> Self {
+        Self {
+            buy_size: Decimal::ZERO,
+            buy_cost: Decimal::ZERO,
+            sell_size: Decimal::ZERO,
+            sell_revenue: Decimal::ZERO,
+        }
+    }
+}
+
+pub fn compute_realized_pnl(trades: &[Trade]) -> Result<RealizedPnl> {
+    let mut accum: HashMap<String, TradeAccum> = HashMap::new();
+
+    for trade in trades {
+        let size = Decimal::from_str(&trade.size)?;
+        let cost = Decimal::from_str(&trade.cost)?;
+        let entry = accum.entry(trade.token_id.clone()).or_default();
+        match trade.side.as_str() {
+            "buy" => {
+                entry.buy_size += size;
+                entry.buy_cost += cost;
+            }
+            "sell" => {
+                entry.sell_size += size;
+                entry.sell_revenue += cost;
+            }
+            _ => {}
+        }
+    }
+
+    let mut total_realized = Decimal::ZERO;
+    let mut closed_trades = 0usize;
+    let mut wins = 0usize;
+    let mut losses = 0usize;
+
+    for a in accum.values() {
+        if a.sell_size == Decimal::ZERO {
+            continue;
+        }
+        let avg_buy_price = if a.buy_size > Decimal::ZERO {
+            a.buy_cost / a.buy_size
+        } else {
+            Decimal::ZERO
+        };
+
+        let realized = a.sell_revenue - (avg_buy_price * a.sell_size);
+        total_realized += realized;
+
+        let net = a.buy_size - a.sell_size;
+        if net == Decimal::ZERO {
+            closed_trades += 1;
+            if realized > Decimal::ZERO {
+                wins += 1;
+            } else if realized < Decimal::ZERO {
+                losses += 1;
+            }
+        }
+    }
+
+    Ok(RealizedPnl {
+        total_realized_pnl: total_realized,
+        closed_trades,
+        wins,
+        losses,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,5 +495,81 @@ mod tests {
         // total_value = 635 + 365 = 1000
         // net_pnl = 1000 - 1000 = 0 (NOT -365!)
         assert_eq!(report.total_pnl, "0.0000");
+    }
+
+    // ── compute_realized_pnl ──
+
+    #[test]
+    fn realized_pnl_no_closed_trades() {
+        let trades = vec![make_trade("tok_a", "buy", "0.50", "10")];
+        let realized = compute_realized_pnl(&trades).unwrap();
+        assert_eq!(realized.total_realized_pnl, Decimal::ZERO);
+        assert_eq!(realized.closed_trades, 0);
+        assert_eq!(realized.wins, 0);
+    }
+
+    #[test]
+    fn realized_pnl_profitable_close() {
+        let trades = vec![
+            make_trade("tok_a", "buy", "0.50", "10"),
+            make_trade("tok_a", "sell", "0.70", "10"),
+        ];
+        let realized = compute_realized_pnl(&trades).unwrap();
+        assert_eq!(
+            realized.total_realized_pnl,
+            Decimal::from_str("2.00").unwrap()
+        );
+        assert_eq!(realized.closed_trades, 1);
+        assert_eq!(realized.wins, 1);
+    }
+
+    #[test]
+    fn realized_pnl_losing_close() {
+        let trades = vec![
+            make_trade("tok_a", "buy", "0.50", "10"),
+            make_trade("tok_a", "sell", "0.30", "10"),
+        ];
+        let realized = compute_realized_pnl(&trades).unwrap();
+        assert_eq!(
+            realized.total_realized_pnl,
+            Decimal::from_str("-2.00").unwrap()
+        );
+        assert_eq!(realized.closed_trades, 1);
+        assert_eq!(realized.wins, 0);
+        assert_eq!(realized.losses, 1);
+    }
+
+    #[test]
+    fn realized_pnl_partial_sell() {
+        let trades = vec![
+            make_trade("tok_a", "buy", "0.50", "10"),
+            make_trade("tok_a", "sell", "0.70", "4"),
+        ];
+        let realized = compute_realized_pnl(&trades).unwrap();
+        // Partial sell: (0.70 - 0.50) * 4 = 0.80
+        assert_eq!(
+            realized.total_realized_pnl,
+            Decimal::from_str("0.80").unwrap()
+        );
+        assert_eq!(realized.closed_trades, 0); // not fully closed
+        assert_eq!(realized.wins, 0);
+    }
+
+    #[test]
+    fn realized_pnl_multiple_buys_then_sell() {
+        let trades = vec![
+            make_trade("tok_a", "buy", "0.40", "10"),
+            make_trade("tok_a", "buy", "0.60", "10"),
+            make_trade("tok_a", "sell", "0.55", "20"),
+        ];
+        let realized = compute_realized_pnl(&trades).unwrap();
+        // Avg buy = (4.00 + 6.00) / 20 = 0.50, sold at 0.55 * 20 = 11.00
+        // Realized = 11.00 - (0.50 * 20) = 1.00
+        assert_eq!(
+            realized.total_realized_pnl,
+            Decimal::from_str("1.00").unwrap()
+        );
+        assert_eq!(realized.closed_trades, 1);
+        assert_eq!(realized.wins, 1);
     }
 }

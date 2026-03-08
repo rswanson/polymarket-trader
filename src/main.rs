@@ -212,6 +212,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         json,
                     )
                     .await?;
+                    commands::dry_run::print_outcome_note(&resolved, outcome.is_some());
                 }
                 DryRunCommand::Market {
                     market,
@@ -223,14 +224,30 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
                     commands::dry_run::place_market(&clob_client, &resolved, side, amount, json)
                         .await?;
+                    commands::dry_run::print_outcome_note(&resolved, outcome.is_some());
                 }
                 DryRunCommand::Close {
                     market,
                     outcome,
                     size,
                 } => {
-                    let resolved =
-                        resolve::resolve_market(&gamma_client, market, outcome.as_deref()).await?;
+                    let market_identifier = if let Ok(index) = market.parse::<usize>() {
+                        if index > 0 && index <= 1000 {
+                            let (token_id, slug) =
+                                commands::dry_run::resolve_position_index(index)?;
+                            slug.unwrap_or(token_id)
+                        } else {
+                            market.clone()
+                        }
+                    } else {
+                        market.clone()
+                    };
+                    let resolved = resolve::resolve_market(
+                        &gamma_client,
+                        &market_identifier,
+                        outcome.as_deref(),
+                    )
+                    .await?;
                     commands::dry_run::close(&clob_client, &resolved, size.as_deref(), json)
                         .await?;
                 }
@@ -246,8 +263,29 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 DryRunCommand::Pnl => {
                     commands::dry_run::pnl(&clob_client, json).await?;
                 }
-                DryRunCommand::Portfolio => {
-                    commands::dry_run::portfolio(&clob_client, json).await?;
+                DryRunCommand::Portfolio {
+                    take_profit,
+                    stop_loss,
+                } => {
+                    commands::dry_run::portfolio(&clob_client, *take_profit, *stop_loss, json)
+                        .await?;
+                }
+                DryRunCommand::Summary => {
+                    commands::dry_run::summary(&clob_client, json).await?;
+                }
+                DryRunCommand::Alerts {
+                    take_profit,
+                    stop_loss,
+                    interval,
+                } => {
+                    commands::dry_run::alerts(
+                        &clob_client,
+                        *take_profit,
+                        *stop_loss,
+                        *interval,
+                        json,
+                    )
+                    .await?;
                 }
                 DryRunCommand::Reset { balance } => {
                     commands::dry_run::reset(balance, json)?;
