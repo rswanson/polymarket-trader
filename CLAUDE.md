@@ -56,6 +56,18 @@ Errors propagate via `anyhow::Result` to `main()`, which formats them (JSON or s
 - `RUST_LOG` — Tracing log level filter
 - Standard AWS credential env vars (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, etc.)
 
+## Agent Skills
+
+Skills in `.claude/skills/` teach agents how to use the CLI for Polymarket trading:
+
+- **market-research** — Search, browse, and analyze markets and prices (no auth)
+- **paper-trading** — Simulate trades with the dry-run system (no auth, no real money)
+- **portfolio** — View balances, positions, and P&L (mixed auth)
+- **order-management** — List and cancel open orders (requires auth)
+- **trade-execution** — Place real limit/market orders (requires auth, user confirmation mandatory)
+
+All skills instruct agents to use `--json` for structured output. Trade execution requires explicit user confirmation before every order. When intent is ambiguous, agents should default to paper trading.
+
 ## Worktrees
 
 Use `.worktrees/` for git worktrees (already in `.gitignore`).
