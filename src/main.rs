@@ -4,6 +4,8 @@ mod commands;
 mod dry_run;
 mod gamma;
 mod output;
+#[allow(dead_code, reason = "public API consumed by later tasks (4-9)")]
+mod resolve;
 mod signer;
 
 use clap::Parser;
